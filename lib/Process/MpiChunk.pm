@@ -1,5 +1,3 @@
-#! /usr/bin/perl -w
-
 package Process::MpiChunk;
 
 use strict;
@@ -250,6 +248,7 @@ sub _prepare {
       #-set up variables that are the result of chunk accumulation
       $VARS->{p_fastas} = {};
       $VARS->{t_fastas} = {};
+      $VARS->{n_fastas} = {};
       $VARS->{gff3_files} = [];
    }
    elsif($tier_type == 1){
@@ -748,7 +747,7 @@ sub _go {
 	    if($CTL_OPT{go_gffdb} && GI::is_NFS_mount($dbfile) && !GI::is_NFS_mount($TMP)){
 		$dbfile = GI::localize_file($dbfile);
 	    }
-	    my $GFF_DB = new GFFDB($dbfile);
+	    my $GFF_DB = new GFFDB($dbfile) if($CTL_OPT{go_gffdb});
 
 	    #-- repeatmask with gff3 input
 	    my $rm_gff_keepers = [];
@@ -763,34 +762,39 @@ sub _go {
 		 if($CTL_OPT{organism_type} ne 'prokaryotic');
 	    }
 
-	    #-- repeatmask with RepeatMasker	 
+	    #-- repeatmask with RepeatMasker
 	    my $rm_rb_keepers = []; #repeat masker RepBase
 	    if ($CTL_OPT{model_org}) { #model organism repeats
-	       $rm_rb_keepers = GI::repeatmask($chunk,
-					       $subvoid,
-					       $safe_seq_id,
-					       $CTL_OPT{model_org},
-					       $CTL_OPT{RepeatMasker},
-					       '',
-					       $CTL_OPT{cpus},
-					       $LOG
-					      );
-	       
+	       my @models = split(/\,/, $CTL_OPT{model_org});
+	       foreach my $mod (@models){
+		   my $keepers = GI::repeatmask($chunk,
+						$subvoid,
+						$safe_seq_id,
+						$mod,
+						$CTL_OPT{RepeatMasker},
+						'',
+						$CTL_OPT{cpus},
+						$LOG);
+		   push(@$rm_rb_keepers, @$keepers);
+	       }
+
 	       #mask the chunk
 	       $chunk = repeat_mask_seq::mask_chunk($chunk, $rm_rb_keepers)
 		   if($CTL_OPT{organism_type} ne 'prokaryotic');
 	    }
 	    my $rm_sp_keepers = []; #repeat masker species
 	    if ($CTL_OPT{rmlib}) {  #species specific repeats;
-	       $rm_sp_keepers = GI::repeatmask($chunk,
-					       $subvoid,
-					       $safe_seq_id,
-					       $CTL_OPT{model_org},
-					       $CTL_OPT{RepeatMasker},
-					       $CTL_OPT{rmlib},
-					       $CTL_OPT{cpus},
-					       $LOG
-					       );
+	       foreach my $db (@{$VARS->{CTL_OPT}{_m_db}}){
+		   my $keepers = GI::repeatmask($chunk,
+						$subvoid,
+						$safe_seq_id,
+						$CTL_OPT{model_org},
+						$CTL_OPT{RepeatMasker},
+						$db,
+						$CTL_OPT{cpus},
+						$LOG);
+		   push(@$rm_sp_keepers, @$keepers);
+	       }
 
 	       #mask the chunk
 	       $chunk = repeat_mask_seq::mask_chunk($chunk, $rm_sp_keepers)
@@ -1996,6 +2000,7 @@ sub _go {
 							 $CTL_OPT{pid_blastn},
 							 $CTL_OPT{en_score_limit},
 							 $CTL_OPT{split_hit},
+							 $CTL_OPT{min_intron},
 							 $CTL_OPT{en_matrix},
 							 $CTL_OPT{pred_flank},
 							 $CTL_OPT{est_forward},
@@ -2501,6 +2506,7 @@ sub _go {
 							$CTL_OPT{pid_tblastx},
 							$CTL_OPT{en_score_limit},
 	                                                $CTL_OPT{split_hit},
+	                                                $CTL_OPT{min_intron},
 							$CTL_OPT{en_matrix},
 							$CTL_OPT{pred_flank},
 							$CTL_OPT{est_forward},
@@ -3008,6 +3014,7 @@ sub _go {
 							 $CTL_OPT{pid_blastx},
 							 $CTL_OPT{ep_score_limit},
 							 $CTL_OPT{split_hit},
+							 $CTL_OPT{min_intron},
 							 $CTL_OPT{ep_matrix},
 							 $CTL_OPT{pred_flank},
 							 $CTL_OPT{est_forward},
@@ -3171,7 +3178,7 @@ sub _go {
 	    if($CTL_OPT{go_gffdb} && GI::is_NFS_mount($dbfile) && !GI::is_NFS_mount($TMP)){
 		$dbfile = GI::localize_file($dbfile);
 	    }
-	    my $GFF_DB = new GFFDB($dbfile);
+	    my $GFF_DB = new GFFDB($dbfile) if($CTL_OPT{go_gffdb});
 
 	    #==GFF3 passthrough of evidence
 	    my $prot_gff_keepers = [];
@@ -3596,7 +3603,7 @@ sub _go {
 	 elsif ($flag eq 'result') {
 	    #-------------------------RESULT
 	    while (my $key = each %{$self->{RESULTS}}) {
-	       if($key eq 'p_fastas' || $key eq 't_fastas'){
+	       if($key eq 'p_fastas' || $key eq 't_fastas' || $key eq 'n_fastas'){
 		  while(my $key2 = each %{$self->{RESULTS}->{$key}}){
 		     $VARS->{$key}->{$key2} .= $self->{RESULTS}->{$key}->{$key2};
 		  }
@@ -3626,8 +3633,12 @@ sub _go {
             #------------------------ARGS_IN
 	    @args = (qw(section_file
 			seq_id
+			safe_seq_id
 			q_seq_obj
-			CTL_OPT)
+                        chunk
+                        the_void
+			CTL_OPT
+			LOG)
 		     );
 	    #------------------------ARGS_IN
 	 }
@@ -3635,10 +3646,13 @@ sub _go {
 	    print STDERR "$level_status\n";
 	    #-------------------------CODE
 	    my %CTL_OPT = %{$VARS->{CTL_OPT}};
+	    my $the_void = $VARS->{the_void};
 	    my $q_seq_obj = $VARS->{q_seq_obj};
 	    my $seq_id = $VARS->{seq_id};
+	    my $safe_seq_id = $VARS->{safe_seq_id};
+	    my $chunk = $VARS->{chunk};
 	    my $section_file = $VARS->{section_file};
-	    my $GFF3         = $VARS->{GFF3};
+	    my $LOG = $VARS->{LOG};
 
 	    my $section = Storable::retrieve($section_file);
 	    my $tblastx_keepers    = $section->{tblastx_keepers};
@@ -3661,24 +3675,24 @@ sub _go {
 	    my $final_est = GI::combine($exonerate_e_data,
 					$est_gff_keepers);
 
-            #add unpolished alignments (for prokaryotes)
-            if($CTL_OPT{organism_type} eq 'prokaryotic'){
-                $final_est = GI::combine($final_est, $blastn_keepers);
-            }
-            else{ #remove unpolisjed alignments (from gff3)
-                @$final_est = grep {$_->algorithm !~ /^blastn/} @$final_est;
-            }
+	    #add unpolished alignments (for prokaryotes)
+	    if($CTL_OPT{organism_type} eq 'prokaryotic'){
+		$final_est = GI::combine($final_est, $blastn_keepers);
+	    }
+	    else{ #remove unpolisjed alignments (from gff3)
+		@$final_est = grep {$_->algorithm !~ /^blastn/} @$final_est;
+	    }
 
 	    my $final_altest = GI::combine($exonerate_a_data,
 					   $altest_gff_keepers);
 
-            #add unpolished alignments (for prokaryotes)
-            if($CTL_OPT{organism_type} eq 'prokaryotic'){
-                $final_altest = GI::combine($final_altest, $tblastx_keepers);
-            }
-            else{ #remove unpolished alignments (from gff3)
-                @$final_altest = grep {$_->algorithm !~ /^tblastx/} @$final_altest;
-            }
+	    #add unpolished alignments (for prokaryotes)
+	    if($CTL_OPT{organism_type} eq 'prokaryotic'){
+		$final_altest = GI::combine($final_altest, $tblastx_keepers);
+	    }
+	    else{ #remove unpolished alignments (from gff3)
+		@$final_altest = grep {$_->algorithm !~ /^tblastx/} @$final_altest;
+	    }
 
 	    my $final_prot = GI::combine($blastx_keepers,
 					 $exonerate_p_data,
@@ -3688,8 +3702,32 @@ sub _go {
 					 $pred_gff_keepers);
 
 	    my $final_ncrna = GI::combine($ncrna_on_chunk,
-					 $ncrna_gff_keepers);
+					  $ncrna_gff_keepers);
 
+	    #run evm now that the evidence is aligned and the predictors have run                                                       
+            my $evm_preds = [];#makes an empty array ref                                                                                
+	    if(grep{/evm/} @{$CTL_OPT{_run}}){
+		my $t_dir = GI::get_global_temp();
+		my $sid = $safe_seq_id.".abinit_nomask.".$chunk->number();                                                                
+		my $t_file = "$t_dir/$sid";
+		my $seq = $q_seq_obj->seq();
+		$seq = Fasta::toFastaRef('>'.$seq_id, \$seq); #over writes $seq to save memory                                       
+		FastaFile::writeFile($seq, $t_file); #takes the fasta ref and writes it out as a wraped fasta file                      
+		
+		$evm_preds = GI::evm($t_file,
+				     $the_void,
+				     \%CTL_OPT,
+				     $LOG,
+				     $final_prot,
+				     $final_est,
+				     $final_altest,
+				     $final_pred,
+				     $q_seq_obj,
+				     $seq_id);
+		
+		push(@$final_pred, @$evm_preds);# $evm_preds onto $final_pred dereference both of them                                 
+	    }
+	    
 	    #group evidence for annotation
 	    my $all_data = maker::auto_annotator::prep_hits($final_prot,
 							    $final_est,
@@ -3707,8 +3745,9 @@ sub _go {
 	    #-------------------------CODE
 	 
 	    #------------------------RETURN
-	    %results = (all_data => $all_data
-		       );
+	    %results = (all_data => $all_data,
+			evm_preds => $evm_preds #check
+			);
 	    #------------------------RETURN
 	 }
 	 elsif ($flag eq 'result') {
@@ -3990,7 +4029,7 @@ sub _go {
 	    my $non_coding = [];
 	    my @nc_keys = grep {/^ncrna_|_ncrna$/} keys %$annotations;
 	    foreach my $k (@nc_keys){
-		push(@$non_coding, @{$annotations->{$k}})
+		push(@$non_coding, @{$annotations->{$k}});
 	    }
 	    
 	    #add non-overlapping to final set if specified
@@ -4096,17 +4135,21 @@ sub _go {
 	    #--- building fastas for annotations (grows with iteration)
 	    my $p_fastas = {};
 	    my $t_fastas = {};
+	    my $n_fastas = {};
 	    GI::maker_p_and_t_fastas($maker_anno,
+				     $non_coding,
 				     $non_over,
 				     $annotations,
 				     $p_fastas,
 				     $t_fastas,
+				     $n_fastas,
 				   );
 	    #-------------------------CODE
 
 	    #------------------------RETURN
 	    %results = ( p_fastas => $p_fastas,
 			 t_fastas => $t_fastas,
+			 n_fastas => $n_fastas,
 			 maker_anno         => [], #clear memory
 			 blastn_keepers     => [], #clear memory
 			 tblastx_keepers    => [], #clear memory
@@ -4124,7 +4167,7 @@ sub _go {
 	 elsif ($flag eq 'result') {
 	    #-------------------------RESULT
 	    while (my $key = each %{$self->{RESULTS}}) {
-	       if($key eq 'p_fastas' || $key eq 't_fastas'){
+	       if($key eq 'p_fastas' || $key eq 't_fastas' || $key eq 'n_fastas'){
 		  while(my $key2 = each %{$self->{RESULTS}->{$key}}){
 		     $VARS->{$key}->{$key2} .= $self->{RESULTS}->{$key}->{$key2};
 		  }
@@ -4157,6 +4200,7 @@ sub _go {
 			safe_seq_id
 			p_fastas
 			t_fastas
+			n_fastas
 			GFF3
 			gff3_files
 			DS_CTL
@@ -4176,6 +4220,7 @@ sub _go {
 	    my $safe_seq_id = $VARS->{safe_seq_id};
 	    my $p_fastas = $VARS->{p_fastas};
 	    my $t_fastas = $VARS->{t_fastas};
+	    my $n_fastas = $VARS->{n_fastas};
 	    my $GFF3 = $VARS->{GFF3};
 	    my $gff3_files = $VARS->{gff3_files};
 	    my $DS_CTL = $VARS->{DS_CTL};
@@ -4183,7 +4228,7 @@ sub _go {
 	    my $LOCK = $VARS->{LOCK};
 
 	    #--- write fastas for ab-initio predictions
-	    GI::write_p_and_t_fastas($p_fastas, $t_fastas, $safe_seq_id, $out_dir);
+	    GI::write_p_and_t_fastas($p_fastas, $t_fastas, $n_fastas, $safe_seq_id, $out_dir);
 	    
 	    #--- write GFF3 file
 	    $GFF3->merge($gff3_files);
@@ -4283,6 +4328,7 @@ sub _on_termination {
    elsif($tier_type == 4){
       $tier->{RESULTS}->{p_fastas} = $tier->{VARS}->{p_fastas};
       $tier->{RESULTS}->{t_fastas} = $tier->{VARS}->{t_fastas};
+      $tier->{RESULTS}->{n_fastas} = $tier->{VARS}->{n_fastas};
    }
 
    delete($tier->{VARS});

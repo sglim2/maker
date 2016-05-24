@@ -74,6 +74,8 @@ sub new {
     }
 
     $self->install_base_relpaths('exe' => 'exe');
+    $self->install_base_relpaths('lib' => 'perl/lib');
+    $self->install_base_relpaths('arch' => 'perl/lib');
     bless($self, $class);
 
     #performs a check for eternal algorithm dependencies
@@ -864,6 +866,43 @@ sub ACTION_gbrowse{
     $self->cpan_install('Bio::Graphics::Browser2', 0);
 }
 
+#update the locations file for urls
+sub ACTION_locations{
+    my $self = shift;
+    my $base = $self->install_destination('exe');
+
+    #get OS and architecture
+    my %os_ok = (Linux_x86_64  => 1,
+		 Linux_i386    => 1,
+		 Darwin_i386   => 1,
+		 Darwin_x86_64 => 1,
+		 src           => 1); 
+    my ($OS, $ARC) = (POSIX::uname())[0,4];
+    $ARC = 'i386' if($ARC =~ /^i.86$/);
+    ($OS, $ARC) = ('src', '') if(! $os_ok{"$OS\_$ARC"});
+
+    #get url for exectuable to be installed
+    my $data;    
+    my $loc = $self->base_dir()."/locations";
+    open(LOC, '<', $loc)
+	or die "ERROR: Could not open locations to download dependencies\n";
+    my $line = <LOC>;
+    if($line =~ /^\#\#MAKER/){
+	$data = join('', <LOC>);
+	eval $data;
+    }
+    close(LOC);
+
+    my $file = "$base/alt_locations"; #file to save to
+    my $url = $data->{locations}{"$OS\_$ARC"};
+    
+    $self->getstore($url, $file) or die $self->fail('locations', $file);
+    File::Copy::copy($loc, "$loc.bak") or die $self->fail('locations', $file);
+    File::Copy::move($file, $loc) or die $self->fail('locations', $file);
+
+    print "The locations file was updated successfully\n";    
+}
+
 
 #runs all the algorithm installs that are missing
 sub ACTION_installexes{
@@ -1068,6 +1107,23 @@ sub _install_exe {
     }
     close(LOC);
 
+    #get alternate url locations just in case
+    my $data2 = {};
+    my $file = "$base/alt_locations"; #file to save to
+    my $url = $data->{locations}{"$OS\_$ARC"};
+    $self->getstore($url, $file) or unlink($file);
+    if(-f $file){
+	my $data;
+	open(LOC, '<', $file);
+	my $line = <LOC>;
+	if($line =~ /^\#\#MAKER/){
+	    $data = join('', <LOC>);
+	    eval $data;
+	}
+	close(LOC);
+	$data2 = $data;
+    }
+
     #maker prerequisite installation directory
     if(! -d $base){
 	mkdir($base) ||
@@ -1081,8 +1137,9 @@ sub _install_exe {
 	#RepeatMasker
 	my $file = "$base/$exe.tar.gz"; #file to save to
         my $url = $data->{$exe}{"$OS\_$ARC"}; #url to RepeatMasker for OS
+        my $url2 = $data2->{$exe}{"$OS\_$ARC"}; #url to RepeatMasker for OS
 	print "Downloading $exe...\n";
-        $self->getstore($url, $file) or return $self->fail($exe, $path);
+        $self->getstore($url, $file, {ALT => $url2}) or return $self->fail($exe, $path);
 	print "Unpacking $exe tarball...\n";
         $self->extract_archive($file) or return $self->fail($exe, $path);
         push(@unlink, $file);
@@ -1107,8 +1164,9 @@ sub _install_exe {
 	    chdir($path);
 	    $file = "$path/$req.tar.gz"; #file to save to
 	    $url = $data->{$req}{"$OS\_$ARC"}; #url to rmblast for OS
+	    $url2 = $data2->{$req}{"$OS\_$ARC"}; #url to rmblast for OS
 	    print "Downloading $req...\n";
-	    $self->getstore($url, $file, $user, $pass) or return $self->fail($req, $path);
+	    $self->getstore($url, $file, {USER => $user, PASS => $pass, ALT => $url2}) or return $self->fail($req, $path);
 	    print "Unpacking $exe tarball...\n";
 	    $self->extract_archive($file) or return $self->fail($req, $path);
 	    push(@unlink, $file);
@@ -1128,8 +1186,9 @@ sub _install_exe {
 	unlink("$path/$req");
 	$file = "$path/$req"; #file to save to
         $url = $data->{$req}{"$OS\_$ARC"}; #url to rmblast for OS
+        $url2 = $data2->{$req}{"$OS\_$ARC"}; #url to rmblast for OS
 	print "Downloading $req...\n";
-        $self->getstore($url, $file) or return $self->fail($req, $path);
+        $self->getstore($url, $file, {ALT => $url2}) or return $self->fail($req, $path);
         chmod(0755, $file) or return $self->fail($req, $path);
 	return $self->fail($req, $path) if(! -f "$path/$req");
 
@@ -1139,6 +1198,7 @@ sub _install_exe {
 	File::Path::rmtree("$path/$req");
 	$file = "$path/$req.tar.gz"; #file to save to
         $url = $data->{$req}{"$OS\_$ARC"}; #url to rmblast for OS
+        $url2 = $data2->{$req}{"$OS\_$ARC"}; #url to rmblast for OS
 
 	#not needed any more 10/10/2012
 	#if($OS eq 'Linux'){
@@ -1149,7 +1209,7 @@ sub _install_exe {
 	#}
 
 	print "Downloading $req...\n";
-        $self->getstore($url, $file) or return $self->fail($req, $path);
+        $self->getstore($url, $file, {ALT => $url2}) or return $self->fail($req, $path);
 	print "Unpacking $req tarball...\n";
         $self->extract_archive($file) or return $self->fail($req, $path);
         push(@unlink, $file);
@@ -1163,13 +1223,14 @@ sub _install_exe {
 	}
 	else{ #install BLAST+ first
 	    my $req2 = 'blast';
-	    my $file2 = "$path/$req2.tar.gz"; #file to save to
-	    my $url2 = $data->{$req2}{"$OS\_$ARC"}; #url to rmblast for OS
+	    my $file = "$path/$req2.tar.gz"; #file to save to
+	    my $url = $data->{$req2}{"$OS\_$ARC"}; #url to rmblast for OS
+	    my $url2 = $data2->{$req2}{"$OS\_$ARC"}; #url to rmblast for OS
 	    print "Downloading $req2...\n";
-	    $self->getstore($url2, $file2) or return $self->fail($req2, $path);
+	    $self->getstore($url, $file, {ALT => $url2}) or return $self->fail($req2, $path);
 	    print "Unpacking $req2 tarball...\n";
-	    $self->extract_archive($file2) or return $self->fail($req2, $path);
-	    push(@unlink, $file2);
+	    $self->extract_archive($file) or return $self->fail($req2, $path);
+	    push(@unlink, $file);
 	    my ($dir2) = grep {-d $_} File::Glob::bsd_glob("ncbi-blast-*");
 
 	    #move to rmblast path, not blast path
@@ -1216,8 +1277,9 @@ sub _install_exe {
 	File::Path::rmtree($path);
 	my $file = "$base/$exe.tar.gz"; #file to save to
         my $url = $data->{$exe}{"$OS\_$ARC"}; #url to blast for OS
+        my $url2 = $data2->{$exe}{"$OS\_$ARC"}; #url to blast for OS
 	print "Downloading $exe...\n";
-        $self->getstore($url, $file) or return $self->fail($exe, $path);
+        $self->getstore($url, $file, {ALT => $url2}) or return $self->fail($exe, $path);
 	print "Unpacking $exe tarball...\n";
         $self->extract_archive($file) or return $self->fail($exe, $path);
         push (@unlink, $file);
@@ -1238,8 +1300,9 @@ sub _install_exe {
         File::Path::rmtree($path);
 	my $file = "$base/$exe.tar.gz"; #file to save to
 	my $url = $data->{$exe}{"$OS\_$ARC"}; #url to blast for OS
+	my $url2 = $data2->{$exe}{"$OS\_$ARC"}; #url to blast for OS
 	print "Downloading $exe...\n";
-        $self->getstore($url, $file) or return $self->fail($exe, $path);
+        $self->getstore($url, $file, {ALT => $url2}) or return $self->fail($exe, $path);
 	print "Unpacking $exe tarball...\n";
         $self->extract_archive($file) or return $self->fail($exe, $path);
         push (@unlink, $file);
@@ -1264,8 +1327,9 @@ sub _install_exe {
         File::Path::rmtree($path);
 	my $file = "$base/$exe.tar.gz"; #file to save to
 	my $url = $data->{$exe}{"$OS\_$ARC"}; #url to blast for OS
+	my $url2 = $data2->{$exe}{"$OS\_$ARC"}; #url to blast for OS
 	print "Downloading $exe...\n";
-        $self->getstore($url, $file) or return $self->fail($exe, $path);
+        $self->getstore($url, $file, {ALT => $url2}) or return $self->fail($exe, $path);
 	print "Unpacking $exe tarball...\n";
         $self->extract_archive($file) or return $self->fail($exe, $path);
 	push (@unlink, $file);
@@ -1279,23 +1343,13 @@ sub _install_exe {
         &File::Path::rmtree($path);
 	my $file = "$base/$exe.tar.gz"; #file to save to
 	my $url = $data->{$exe}{"$OS\_$ARC"}; #url to blast for OS
+	my $url2 = $data2->{$exe}{"$OS\_$ARC"}; #url to blast for OS
 	print "Downloading $exe...\n";
-        $self->getstore($url, $file) or return $self->fail($exe, $path);
-
-	#this version of the augustus tarball doesn't make the augusus directory
-	if($url =~ /augustus\.2\.6/){
-	    mkdir("$base/augustus.2.6");
-	    chdir("$base/augustus.2.6");
-	}
+        $self->getstore($url, $file, {ALT => $url2}) or return $self->fail($exe, $path);
 
 	print "Unpacking $exe tarball...\n";
         $self->extract_archive($file) or return $self->fail($exe, $path);
 	push (@unlink, $file);
-
-	#change back to base for this version of augustus
-	if($url =~ /augustus\.2\.6/){
-	    chdir($base);
-	}
 
 	my ($dir) = grep {-d $_} File::Glob::bsd_glob("augustus*");
 	chdir("$dir/src");
@@ -1322,8 +1376,9 @@ sub _install_exe {
 	&File::Path::rmtree($path);
 	my $file = "$base/$exe.tar.gz"; #file to save to
 	my $url = $data->{$exe}{"$OS\_$ARC"}; #url to blast for OS
+	my $url2 = $data2->{$exe}{"$OS\_$ARC"}; #url to blast for OS
 	print "Downloading $exe...\n";
-	$self->getstore($url, $file) or return $self->fail($exe, $path);
+	$self->getstore($url, $file, {ALT => $url2}) or return $self->fail($exe, $path);
 	print "Unpacking $exe tarball...\n";
 	$self->extract_archive($file) or return $self->fail($exe, $path);
 	push (@unlink, $file);
@@ -1351,11 +1406,12 @@ sub _install_exe {
 
 	&File::Path::rmtree($path);
 	my $url = $data->{$exe}{"$OS\_$ARC"}; #url to blast for OS
+	my $url2 = $data2->{$exe}{"$OS\_$ARC"}; #url to blast for OS
 	my $file = "$base/$exe.tar.gz"; #file to save to	
 	$file = "$base/$exe.zip"if($url =~ /\.zip$/);
 
 	print "Downloading $exe...\n";
-	$self->getstore($url, $file) or return $self->fail($exe, $path);
+	$self->getstore($url, $file, {ALT => $url2}) or return $self->fail($exe, $path);
 	print "Unpacking $exe tarball...\n";
 	$self->extract_archive($file) or return $self->fail($exe, $path);
 	push (@unlink, $file);
@@ -1377,11 +1433,12 @@ sub _install_exe {
 
 	&File::Path::rmtree($path);
 	my $url = $data->{$exe}{"$OS\_$ARC"}; #url to blast for OS
+	my $url2 = $data2->{$exe}{"$OS\_$ARC"}; #url to blast for OS
 	my $file = "$base/$exe.tar.gz"; #file to save to
 	$file = "$base/$exe.zip"if($url =~ /\.zip$/);
 
 	print "Downloading $exe...\n";
-	$self->getstore($url, $file) or return $self->fail($exe, $path);
+	$self->getstore($url, $file, {ALT => $url2}) or return $self->fail($exe, $path);
 	print "Unpacking $exe tarball...\n";
 	$self->extract_archive($file) or return $self->fail($exe, $path);
 	push (@unlink, $file);
@@ -1403,8 +1460,9 @@ sub _install_exe {
         File::Path::rmtree($path);
 	my $file = "$base/$exe.tar.gz"; #file to save to
 	my $url = $data->{$exe}{"$OS\_$ARC"}; #url to blast for OS
+	my $url2 = $data2->{$exe}{"$OS\_$ARC"}; #url to blast for OS
 	print "Downloading $exe...\n";
-        $self->getstore($url, $file) or return $self->fail($exe, $path);
+        $self->getstore($url, $file, {ALT => $url2}) or return $self->fail($exe, $path);
 	print "Unpacking $exe tarball...\n";
         $self->extract_archive($file) or return $self->fail($exe, $path);
         push (@unlink, $file);
@@ -1683,13 +1741,17 @@ sub getstore {
     my $self = shift;
     my $url = shift;
     my $file = shift;
-    my $user = shift;
-    my $pass = shift;
+    my $param = shift || {};
 
+    my $user = $param->{USER};
+    my $pass = $param->{PASS};
+    my $alt  = $param->{ALT};
+
+    my $stat;
     if(File::Which::which('wget')){ #Linux
 	my $command = "wget $url -c -O ".quotemeta($file)." --no-check-certificate";
 	$command .= " --user $user --password $pass" if(defined($user) && defined($pass));
-	return $self->do_system($command); #gives status and can continue partial
+	$stat = $self->do_system($command); #gives status and can continue partial
     }
     elsif(File::Which::which('curl')){ #Mac
 	my $command = "curl --connect-timeout 30 -f -L $url -o $file";
@@ -1700,7 +1762,6 @@ sub getstore {
 	my $stat = $self->do_system($command . $continue);
 	#just redo if continue fails
 	$stat = $self->do_system($command) if(! $stat);
-	return $stat;
     }
     else{
 	die "ERROR: LWP::Simple required to download missing executables\n".
@@ -1708,8 +1769,20 @@ sub getstore {
 	    if(!$self->check_installed_status('LWP::Simple', '0')->{ok});
 
 	$url =~ s/^([^\:]\;\/\/)/$1\:\/\/$user\:$pass\@/ if(defined($user) && defined($pass));
-	return LWP::Simple::getstore($url, $file); #just gets the file with no features
+	$stat = LWP::Simple::getstore($url, $file); #just gets the file with no features
     }
+
+    #download failed with alternate url
+    if(! $stat && $alt && $alt ne $url){
+	my $go = $self->y_n("Download failed: $url\n".
+			    "Alternate version or url available: $alt\n".
+			    "Do want to try the alternate version/url?", 'Y');
+
+	delete($param->{ALT});
+	return $self->getstore($alt, $file, $param) if($go);
+    }
+
+    return $stat;
 }
 
 #prints a nice status message for package configuration and install

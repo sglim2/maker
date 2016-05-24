@@ -635,7 +635,7 @@ sub hit_data {
       $hsp_id = join(":", $seq_id, $hsp_id, $uid);
       $hsp_id =~ s/\s/_/g;
       my $hsp_l =
-      get_hsp_data($hsp, $hsp_id, $seq_id, $h_id, $name);
+      get_hsp_data($hsp, $hsp_id, $seq_id, $h_id, $name, $h);
       
       $h_l .= $hsp_l."\n";
       
@@ -665,8 +665,8 @@ sub repeat_data {
    
    my ($class, $type) = get_class_and_type($h, 'hit');
 
-   $class =~ s/^blastx\:repeat.*?$/repeatrunner/;
-   $class =~ s/^blastx/repeatrunner/;
+   $class =~ s/^(blastx|rapsearch)\:repeat.*?$/repeatrunner/;
+   $class =~ s/^(blastx|rapsearch)/repeatrunner/;
 
    my $h_n = $h->name();
    $h_n = uri_escape($h_n, '^a-zA-Z0-9\.\:\^\*\$\@\!\+\_\?\-\|'); #per gff standards
@@ -710,6 +710,9 @@ sub get_class_and_type {
 
     my $type;
     if($class =~ /^blastx(\:.*)?$/i){
+	$type = $k eq 'hit' ? 'protein_match' : 'match_part';
+    }
+    elsif($class =~ /^rapsearch(\:.*)?$/i){
 	$type = $k eq 'hit' ? 'protein_match' : 'match_part';
     }
     elsif($class =~ /^protein2genome(\:.*)?$/i){
@@ -806,11 +809,13 @@ sub get_exon_data {
 	}
 
 	my $e_l = '';
-	foreach my $e (@uniques){
+	for(my $i = 0; $i < @uniques; $i++){
+	    my $e = $uniques[$i];
 		my $nB = $e->nB('query');
                 my $nE = $e->nE('query');
 		
-		my $e_id = get_id_exon();
+	        #my $e_id = get_id_exon();
+	        my $e_id = $i+1; #exon 1 is labeled with ID of exon:1
 		my $e_n  = $e->name();
 		
 		my @t_ids = @{$epl->{t_ids}->{$nB}->{$nE}};
@@ -839,7 +844,6 @@ sub get_exon_data {
 		else{
 		   $e_l = join("\t", @data)."\n".$e_l;
 		}
-
 	}
 
 	return $e_l;
@@ -1099,7 +1103,7 @@ sub get_transcript_data {
 	my $eAED    = $t->{eAED};
 	my $score   = '.'; #transcript scores causes chado errors/warning
 
-	if($t->{hit}->algorithm =~ /est2genome|cdna2genome|protein2genome|BLASTX|est_gff|prot_gff/){
+	if($t->{hit}->algorithm =~ /est2genome|cdna2genome|protein2genome|BLASTX|rapsearch|est_gff|prot_gff/){
 	   $score = $t->{hit}->score();
 	}
 
@@ -1155,6 +1159,7 @@ sub get_hsp_data {
         my $seq_id   = shift;
         my $hit_id   = shift;
         my $hit_n    = shift;
+	my $hit      = shift; #incase I need anything else from the hit itself
 
         my $hsp_str  = $hsp->strand('query') ==  1 ? '+' : '-';
 	my $t_strand = $hsp->strand('hit')   == -1 ? '-' : '+';
@@ -1189,7 +1194,8 @@ sub get_hsp_data {
 	my $nine  = 'ID='.$hsp_id.';Parent='.$hit_id;
 	   $nine .= ';Target='.$hsp_name.' '.$tB.' '.$tE;
 	   $nine .= ' '.$t_strand if($hsp->strand('hit'));
-	   $nine .= ';Gap='.join(' ', @gap).';' if(@gap);
+	   $nine .= ';Length='.$hit->length;
+	   $nine .= ';Gap='.join(' ', @gap) if(@gap);
 	   $nine .= ';'.$hsp->{-attrib} if($hsp->{-attrib});
 	   $nine =~  s/\;$//;
         my @data;
@@ -1225,7 +1231,7 @@ sub get_repeat_hsp_data {
 	($tB, $tE) = ($tE, $tB) if $tB > $tE;
 
 	my ($class, $type) = get_class_and_type($hsp, 'hsp');
-	$class = "repeatrunner" if ($class eq 'blastx');
+	$class = "repeatrunner" if ($class eq 'blastx' || $class eq 'rapsearch');
 	
 	my $hsp_name = $hit_n;
 	$hsp_name = uri_escape($hsp_name, '^a-zA-Z0-9\.\:\^\*\$\@\!\+\_\?\-\|'); #per gff standards

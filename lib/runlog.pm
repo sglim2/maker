@@ -38,10 +38,12 @@ my @ctl_to_log = ('maker_gff',
 		  'gmhmm',
 		  'augustus_species',
 		  'fgenesh_par_file',
+		  'run_evm',
 		  'model_gff',
 		  'pred_gff',
 		  'max_dna_len',
 		  'split_hit',
+		  'min_intron',
 		  'pred_flank',
 		  'pred_stats',
 		  'min_protein',
@@ -57,6 +59,7 @@ my @ctl_to_log = ('maker_gff',
 		  'alt_peptide',
 		  'evaluate',
 		  'blast_type',
+		  'use_rapsearch',
 		  'softmask',
 		  'pcov_blastn',
 		  'pid_blastn',
@@ -365,6 +368,11 @@ sub _load_old_log {
 		    $log_val = 1;
 		}
 
+		#min_intron was always 20 before and not logged
+		if($key eq 'min_intron' && $log_val eq ''){
+		    $log_val = 20;
+		}
+
 		#est_forward was always 0 before and not logged (is is also sometimes hidden)
 		if($key eq 'est_forward'){
 		    $ctl_val = 0 if($ctl_val eq '');
@@ -373,6 +381,12 @@ sub _load_old_log {
 
 		#correct_est_fusion was always 0 before and not logged
 		if($key eq 'correct_est_fusion'){
+		    $ctl_val = 0 if($ctl_val eq '');
+		    $log_val = 0 if($log_val eq '');
+		}
+
+	        #run_evm was off before and not logged
+		if($key eq 'run_evm'){
 		    $ctl_val = 0 if($ctl_val eq '');
 		    $log_val = 0 if($log_val eq '');
 		}
@@ -435,12 +449,14 @@ sub _load_old_log {
 			$key eq 'pcid_rm_blastx' ||
 			$key eq 'eval_rm_blastx' ||
 			$key eq 'bit_rm_blastx' ||
-			$key eq 'blast_type'
+			$key eq 'blast_type' ||
+			$key eq 'use_rapsearch'
 			) {
 			$rm_key{all_but}++;
 		    }
 
 		    if ($key eq 'split_hit' ||
+			$key eq 'min_intron' ||
 			$key eq'ep_score_limit' ||
 			$key eq'en_score_limit'
 			) {
@@ -504,6 +520,11 @@ sub _load_old_log {
 		    if ($key eq 'gmhmm') {
 			$rm_key{genemark}++;
 			$skip{genemark} = $keep;
+		    }
+
+		    if ($key eq 'run_evm') {
+			$rm_key{evm}++;
+			#$skip{evm} = $keep;
 		    }
 
 		    if ($key eq 'protein') {
@@ -687,6 +708,16 @@ sub _load_old_log {
 	    foreach my $e (@{$skip{genemark}}){
 		@f = grep {!/\.$e\.genemark$/} @f;
 	    }
+	    push (@files, @f);
+	}
+	if (exists $rm_key{evm}) {
+	    print STDERR "MAKER WARNING: Changes in control files make re-use of old EVM data impossible\n".
+		"Old EVM files will be erased before continuing\n" unless($main::qq);
+	    
+	    my @f = (<$the_void/*.evm>, <$the_void/*/*.evm>);
+	    #foreach my $e (@{$skip{evm}}){
+	    #	@f = grep {!/\.$e\.evm$/} @f;
+	    #}
 	    push (@files, @f);
 	}
 	if (exists $rm_key{blastn}) {

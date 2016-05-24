@@ -99,28 +99,37 @@ sub parse {
 	next unless $line =~ /^>>/;
 
         my @stuff = split(/\s+/, $line);
-        my $id = $stuff[5];
-        my $strand = 1;
-        my ($b,$e) = $stuff[3] =~ /\((\S+?)-(\S+?)\)/;
-        $strand = -1 if $b > $e;
-	push(@{$d{$stuff[3]}{'id'}}, $stuff[5]);
-	push(@{$d{$stuff[3]}{'score'}}, $stuff[2]);
-	$d{$stuff[3]}{'strand'} = $strand;
-	$d{$stuff[3]}{'b'} = $b;
-	$d{$stuff[3]}{'e'} = $e;
+	my $score = $stuff[2];
+        my $key = $stuff[3];
+        my $match = $stuff[5];
+        my ($b, $e) = $key =~ /\((\S+?)-(\S+?)\)/;
+        my $strand = ($b < $e) ? 1 : -1;
+
+	if(!defined($d{$key})){
+	    $d{$key}{'b'} = $b;
+	    $d{$key}{'e'} = $e;
+	    $d{$key}{'strand'} = $strand;
+	    $d{$key}{'score'} = $score;
+	    $d{$key}{'best'}  = $match;
+	}
+	elsif($score > $d{$key}{'score'}){
+	    $d{$key}{'score'} = $score;
+	    $d{$key}{'best'}  = $match;
+	}
+	push(@{$d{$key}{'match'}}, $match);
     }
     $fh->close();
     my %g;
     my $i = 0;
-    foreach my $hit (keys %d){	    
-	my $id = "snoscan_". $i;
-	$i = 0  if  !defined($g{$id});
-	my @scores = sort {$b <=> $a} @{$d{$hit}{'score'}}; 
-	$g{$id}[$i]{strand}   = $d{$hit}{'strand'};
-	$g{$id}[$i]{type}     = 'exon';
-	$g{$id}[$i]{b}        = $d{$hit}{'b'}; 
-	$g{$id}[$i]{e}        = $d{$hit}{'e'};
-	$g{$id}[$i]{score}    = $scores[0];
+    foreach my $key (keys %d){
+	my $best = $d{$key}{'best'};
+	my $id = "snoscan_$i\__$best";
+	$g{$id}[0]{strand}   = $d{$key}{'strand'};
+	$g{$id}[0]{type}     = 'exon';
+	$g{$id}[0]{b}        = $d{$key}{'b'}; 
+	$g{$id}[0]{e}        = $d{$key}{'e'};
+	$g{$id}[0]{score}    = $d{$key}{'score'};
+	$g{$id}[0]{match}    = join(',', @{$d{$key}{'match'}});
 	$i++;
     }
 

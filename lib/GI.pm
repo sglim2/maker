@@ -29,6 +29,7 @@ use Fasta;
 use Iterator::Fasta;
 use FastaChunker;
 use Widget::RepeatMasker;
+use Widget::rapsearch;
 use Widget::blastx;
 use Widget::tblastx;
 use Widget::blastn;
@@ -37,6 +38,7 @@ use Widget::genemark;
 use Widget::fgenesh;
 use Widget::trnascan;
 use Widget::snoscan;
+use Widget::evm;
 use Widget::formater;
 use PhatHit_utils;
 use Shadower;
@@ -62,7 +64,7 @@ print STDERR "TMP_STAT: TMP is being initialized to $TMP: PID=$$\n" if($main::dt
 #--------------------------- CLASS FUNCTIONS ----------------------------
 #------------------------------------------------------------------------
 sub version {
-    $VERSION = '2.31';
+    $VERSION = '2.32';
     return $VERSION;
 }
 #------------------------------------------------------------------------
@@ -682,11 +684,13 @@ sub process_the_chunk_divide{
 }
 #-----------------------------------------------------------------------------
 sub maker_p_and_t_fastas {
-   my $maker    = shift @_;
-   my $non_over = shift @_;
-   my $all      = shift @_;
-   my $p_fastas = shift @_;
-   my $t_fastas = shift @_;
+   my $maker      = shift @_;
+   my $non_coding = shift @_;
+   my $non_over   = shift @_;
+   my $all        = shift @_;
+   my $p_fastas   = shift @_;
+   my $t_fastas   = shift @_;
+   my $n_fastas   = shift @_;
 
    my $abinit = [];
    my $ncrna = [];
@@ -707,11 +711,16 @@ sub maker_p_and_t_fastas {
        push(@$ncrna, @{$all->{$key}});
    }
 
-   foreach my $an (@$maker) {
+   foreach my $an (@$maker, @$non_coding) {
       foreach my $a (@{$an->{t_structs}}) {
-	 my ($p_fasta, $t_fasta) = get_p_and_t_fastas($a);
-	 $p_fastas->{maker} .= $p_fasta;
-	 $t_fastas->{maker} .= $t_fasta;
+	 my ($p_fasta, $t_fasta, $n_fasta) = get_p_and_t_fastas($a);
+	 if($p_fasta || $t_fasta){
+	     $p_fastas->{maker} .= $p_fasta;
+	     $t_fastas->{maker} .= $t_fasta;
+	 }
+	 if($n_fasta){
+	     $n_fastas->{maker} .= $n_fasta;
+	 }
       }
    }
 
@@ -735,20 +744,25 @@ sub maker_p_and_t_fastas {
 
    foreach my $an (@$mod_gff) {
        foreach my $a (@{$an->{t_structs}}) {
-	   my ($p_fasta, $t_fasta) = get_p_and_t_fastas($a, 'model_gff');
+	   my ($p_fasta, $t_fasta, $n_fasta) = get_p_and_t_fastas($a, 'model_gff');
 	   my $source = $a->{hit}->algorithm;
 	   $source = uri_escape($source, '\*\?\|\\\/\'\"\{\}\<\>\;\,\^\(\)\$\~\:\.\+');
-	   $p_fastas->{$source} .= $p_fasta;
-	   $t_fastas->{$source} .= $t_fasta;
+	   if($p_fasta || $t_fasta){
+	       $p_fastas->{$source} .= $p_fasta;
+	       $t_fastas->{$source} .= $t_fasta;
+	   }
+	   if($n_fasta){
+	       $n_fastas->{$source} .= $n_fasta;
+	   }
        }
    }
 
    foreach my $an (@$ncrna) {
        foreach my $a (@{$an->{t_structs}}) {
-	   my ($p_fasta, $t_fasta) = get_p_and_t_fastas($a);
+	   my ($p_fasta, $t_fasta, $n_fasta) = get_p_and_t_fastas($a, 'ncrna');
 	   my $source = $a->{hit}->algorithm;
 	   $source = uri_escape($source, '\*\?\|\\\/\'\"\{\}\<\>\;\,\^\(\)\$\~\:\.\+');
-	   $t_fastas->{$source} .= $t_fasta;
+	   $n_fastas->{$source} .= $n_fasta;
        }
    }
 }
@@ -760,6 +774,7 @@ sub get_p_and_t_fastas {
 	
    my $t_seq  = $t_struct->{t_seq};
    my $p_seq  = $t_struct->{p_seq};
+   my $is_coding = $t_struct->{is_coding};
    my $t_name = $t_struct->{t_name} || $t_struct->{t_id};
    my $t_off  = "offset:".$t_struct->{t_offset};
    my $AED    = "AED:".sprintf('%.2f', $t_struct->{AED});
@@ -772,6 +787,7 @@ sub get_p_and_t_fastas {
        $t_name = $p_struct->{t_name} || $p_struct->{t_id};
        $t_seq = $p_struct->{t_seq};
        $p_seq = $p_struct->{p_seq};
+       $is_coding = $p_struct->{is_coding};
        $t_off = "offset:".$p_struct->{t_offset};
        $AED = (defined $p_struct->{AED}) ? "AED:".sprintf('%.2f', $p_struct->{AED}) : '';
        $eAED = (defined $p_struct->{eAED}) ? "eAED:".sprintf('%.2f', $p_struct->{eAED}) : '';
@@ -780,16 +796,19 @@ sub get_p_and_t_fastas {
 
    my $p_def = ">$t_name protein $AED $eAED $QI";
    my $t_def = ">$t_name transcript $t_off $AED $eAED $QI";
+   my $n_def = ">$t_name noncoding $AED $eAED $QI";
 
-   my $p_fasta = Fasta::toFasta($p_def, \$p_seq);
-   my $t_fasta = Fasta::toFasta($t_def, \$t_seq);
+   my $p_fasta = Fasta::toFasta($p_def, \$p_seq) if($is_coding);
+   my $t_fasta = Fasta::toFasta($t_def, \$t_seq) if($is_coding);
+   my $n_fasta = Fasta::toFasta($n_def, \$t_seq) if(!$is_coding);
 	
-   return($p_fasta, $t_fasta);
+   return($p_fasta, $t_fasta, $n_fasta);
 }
 #----------------------------------------------------------------------------
 sub write_p_and_t_fastas{
     my $p_fastas = shift @_;
     my $t_fastas = shift @_;
+    my $n_fastas = shift @_;
     my $safe_seq_id = shift @_;
     my $out_dir = shift @_;
 
@@ -809,6 +828,16 @@ sub write_p_and_t_fastas{
 	$name .= "\.transcripts.fasta";
 
 	FastaFile::writeFile(\$t_fastas->{$key},
+			     $name,
+	                    );
+    }
+
+    while( my $key = each %$n_fastas){
+	my $name = "$out_dir/$safe_seq_id.maker";
+	$name .= ".$key" unless($key eq 'maker');
+	$name .= "\.noncoding.fasta";
+
+	FastaFile::writeFile(\$n_fastas->{$key},
 			     $name,
 	                    );
     }
@@ -886,6 +915,7 @@ sub create_blastdb {
 		      protein        => '_p_db',
 		      est            => '_e_db',
 		      altest         => '_a_db',
+		      rmlib          => '_m_db',
 		      repeat_protein => '_r_db');
 
    foreach my $in (List::Util::shuffle(keys %source2dest)){
@@ -1074,10 +1104,13 @@ sub split_db {
 	    $$seq_ref =~ tr/XU/NT/;
 	    $$seq_ref =~ s/[RYKMSWBDHV]/N/g if($main::fix_nucleotides);
 	    die "ERROR: The nucleotide sequence file \'$file\'\n".
-		"appears to contain protein sequence or unrecognized characters. Note\n".
-		"the following nucleotides may be valid but are unsupported [RYKMSWBDHV]\n".
-		"Please check/fix the file before continuing, or set -fix_nucleotides on\n".
-		"the command line to fix this automatically.\n".
+		"contains either protein sequence or unsupported characters. Note the\n".
+		"following nucleotides may be valid but are unsupported [RYKMSWBDHV]. This\n".
+		"message is to get you to look at your input files, and verify that there\n".
+		"is not a mistake. Both an explanation of the cause and a solution are\n".
+		"indicated in this message. Do not post it to the mailing list. Please\n".
+		"manually check/fix the file before continuing, or set -fix_nucleotides on\n".
+		"the command line to automatically replace invalid nucleotides with 'N'.\n".
 		"Invalid Character: '$1'\n\n"
 		if($$seq_ref =~ /([^ATCGN\n])/i);
 	}
@@ -1276,7 +1309,7 @@ sub genemark {
    my $LOG         = shift;
 
    #genemark sometimes fails if called directly so I built a wrapper
-   my $wrap = "$FindBin::Bin/../lib/Widget/genemark/gmhmm_wrap";
+   my $wrap = "$FindBin::RealBin/../lib/Widget/genemark/gmhmm_wrap";
    my $exe  = $CTL_OPT->{organism_type} eq 'eukaryotic' ? $CTL_OPT->{gmhmme3} : $CTL_OPT->{gmhmmp}; #genemark
    my $pro = $CTL_OPT->{probuild}; #helper exe
 
@@ -1379,7 +1412,7 @@ sub fgenesh {
    my $CTL_OPT = shift;
    my $LOG         = shift;
 
-   my $wrap = "$FindBin::Bin/../lib/Widget/fgenesh/fgenesh_wrap"; #fgenesh wrapper
+   my $wrap = "$FindBin::RealBin/../lib/Widget/fgenesh/fgenesh_wrap"; #fgenesh wrapper
    my $exe = $CTL_OPT->{fgenesh};
 
    my @entries = split(',', $CTL_OPT->{fgenesh_par_file});
@@ -1426,7 +1459,11 @@ sub snoscan {
 
     my $exe         = $CTL_OPT->{snoscan};
     my @entries = split(',', $CTL_OPT->{snoscan_rrna});
-
+    my $meth_file;
+   if ($CTL_OPT->{snoscan_meth}){
+	$meth_file = $CTL_OPT->{snoscan_meth};
+    }
+    else{print "WARNING:no O-meth file, expect lower snoscan specificity\n";}
     my @out_files;
     foreach my $entry (@entries){
         my ($rna_file, $label) = $entry =~ /^([^\:]+)\:?(.*)/;
@@ -1437,9 +1474,11 @@ sub snoscan {
 	$LOG->add_entry("STARTED", $backup, "");
 
 	my $command  = $exe;
+	$command .= " -o $out_file";
+	$command .= " -m $meth_file" if $CTL_OPT->{snoscan_meth};
 	$command .= " $rna_file";
 	$command .= " $in_file";
-	$command .= " > $out_file";
+
 
 	my $w = new Widget::snoscan();
 	if (-f $backup) {
@@ -1455,9 +1494,226 @@ sub snoscan {
 	$LOG->add_entry("FINISHED", $backup, "");
 	
 	push(@out_files, [$out_file, $entry]);
+	
     }
     
     return \@out_files;
+}
+#-----------------------------------------------------------------------------
+sub evm {
+    my $in_file     = shift; #fasta file (genomic sequence)
+    my $the_void    = shift;
+    my $CTL_OPT     = shift;
+    my $LOG         = shift;
+    my $final_prot  = shift;
+    my $final_est   = shift;
+    my $final_altest= shift;
+    my $final_pred  = shift;
+    my $q_seq_obj   = shift;
+    my $seq_id      = shift;
+
+    my $exe = $CTL_OPT->{evm};
+
+    my $out_file = "$in_file\.auto_annotator.evm";
+    (my $backup = $out_file) =~ s/.*\/([^\/]+)$/$the_void\/$1/;
+    $LOG->add_entry("STARTED", $backup, "");
+
+    if (-f $backup) {
+        print STDERR "using existing evm report.\n" unless $main::quiet;
+        print STDERR "$backup\n" unless $main::quiet;
+        $out_file = $backup;
+    }
+    else {
+	my $tmp = get_global_temp();
+	my $rank = RANK();
+	my $t_dir = "$tmp/$rank";
+
+	#generate weights file
+	#there are more wight lines writen than are really needed. This is because
+	#it is less computaionaly expensive to just print every option based on 
+	#the known sources than to check for each label individualy.
+
+	my %seen;
+	
+	my ($TFH, $weights) = tempfile( 'evm_weights_XXXXX', DIR => $t_dir, CLEANUP => 1);
+	foreach my $f (@$final_est, @$final_altest){
+	    my $src = lc($f->algorithm);
+
+	    $src =~ s/^exonerate\:*\_*est2genome$/est2genome/;
+	    $src =~ s/^exonerate\:*\_*cdna2genome$/cdna2genome/;
+	    #$seen{$src}++;
+	    
+	    my $value = defined($CTL_OPT->{evmtrans}{$src}) ?
+		$CTL_OPT->{evmtrans}{$src} : $CTL_OPT->{evmtrans}{DEFAULT};
+	    unless ($seen{$src}){ #so you don't print a line for every evidence hit
+		$seen{$src} =1;
+		print $TFH "TRANSCRIPT\t$src\t$value\n";
+		print $TFH "TRANSCRIPT\test_gff:$src\t$value\n";
+		print $TFH "TRANSCRIPT\taltest_gff:$src\t$value\n";
+	    }
+	    next unless(my $label = $f->{_label}); #print a weight for labeled evidence
+	    my $alt = defined($CTL_OPT->{evmtrans}{"$src:$label"}) ?
+		$CTL_OPT->{evmtrans}{"$src:$label"} : $value;
+	    unless ($seen{$src.":".$label}){
+		$seen{$src.":".$label} = 1;
+		print $TFH "TRANSCRIPT\t$src:$label\t$alt\n";
+		print $TFH "TRANSCRIPT\test_gff:$src:$label\t$alt\n";
+		print $TFH "TRANSCRIPT\taltest_gff:$src:$label\t$alt\n";
+	    }
+	}
+	foreach my $f (@$final_prot){
+	    my $src = lc($f->algorithm);
+	    $src =~ s/^exonerate\:*\_*protein2genome$/protein2genome/;
+	    my $value = defined($CTL_OPT->{evmprot}{$src}) ?
+		$CTL_OPT->{evmprot}{$src} : $CTL_OPT->{evmprot}{DEFAULT};
+	    unless ($seen{$src}){
+	    $seen{$src} = 1;
+		print $TFH "PROTEIN\t$src\t$value\n";
+		print $TFH "PROTEIN\tprotein_gff:$src\t$value\n";
+	    }
+	    next unless(my $label = $f->{_label});
+	    my $alt = defined($CTL_OPT->{evmprot}{"$src:$label"}) ?
+		$CTL_OPT->{evmprot}{"$src:$label"} : $value;
+	    unless ($seen{$src.":".$label}){ 
+		$seen{$src.":".$label} =1;
+		print $TFH "PROTEIN\t$src:$label\t$alt\n";
+		print $TFH "PROTEIN\tprotein_gff:$src:$label\t$alt\n";
+	    }	
+	}
+	
+	foreach my $f (@$final_pred){ 
+	    my $src = lc($f->algorithm);
+
+	    my $value = defined($CTL_OPT->{evmab}{$src}) ?
+		$CTL_OPT->{evmab}{$src} : $CTL_OPT->{evmab}{DEFAULT};
+	    unless ($seen{$src}){
+	    $seen{$src} =1;
+		print $TFH "ABINITIO_PREDICTION\t$src\t$value\n";
+		print $TFH "ABINITIO_PREDICTION\tpred_gff:$src\t$value\n";
+		print $TFH "ABINITIO_PREDICTION\tmodel_gff:$src\t$value\n";
+
+		print $TFH "ABINITIO_PREDICTION\t$src"."_masked"."\t$value\n";
+	    }
+	    next unless(my $label = $f->{_label});
+	    my $alt = defined($CTL_OPT->{evmab}{"$src\:$label"}) ?
+		$CTL_OPT->{evmab}{"$src\:$label"} : $value;
+	    unless ($seen{$src.":".$label}){
+		$seen{$src.":".$label} = 1;
+		print $TFH "ABINITIO_PREDICTION\t$src:$label\t$alt\n";
+		print $TFH "ABINITIO_PREDICTION\t$src"."_masked".":$label\t$alt\n";
+		print $TFH "ABINITIO_PREDICTION\tpred_gff:$src:$label\t$alt\n";
+		print $TFH "ABINITIO_PREDICTION\tmodel_gff:$src:$label\t$alt\n";
+	    }	
+	}
+	close($TFH);
+	
+	#process features to build needed GFF3 files for EVM
+	my $all_data = maker::auto_annotator::prep_hits($final_prot,
+							$final_est,
+							$final_altest,
+							$final_pred,
+							[], #final_ncrna
+							[], #model_gff_keepers
+							$q_seq_obj,
+							$CTL_OPT->{single_exon},
+							$CTL_OPT->{single_length},
+							$CTL_OPT->{pred_flank},
+							$CTL_OPT->{organism_type},
+							$CTL_OPT->{est_forward},
+							$CTL_OPT->{correct_est_fusion});
+	
+	#create EST GFF3 file
+	my $flat_ests = maker::auto_annotator::flatten_by_type($all_data, 'ests');
+	my $est_file  = "$in_file.ests_for_evm.gff";
+	my $GFF3_est = Dumper::GFF::GFFV3->new($est_file);
+	$GFF3_est->set_current_contig($seq_id);
+	$GFF3_est->add_phathits($flat_ests);
+	$GFF3_est->finalize;
+	
+#more of mikes debugging
+	#my $command_3 = "cp ";
+	#$command_3 .= $t_dir."/".$in_file.".ests_for_evm.gff";
+	#$command_3 .=" /home/mcampbell/projects/EVM_MAKER/test_data/testing_evm/";
+	#system($command_3);
+	
+	#create protein GFF3 file
+	my $flat_proteins = maker::auto_annotator::flatten_by_type($all_data, 'gomiph');
+	my $prot_file = "$in_file.protein_for_evm.gff";
+	my $GFF3_pro = Dumper::GFF::GFFV3->new($prot_file);
+	$GFF3_pro->set_current_contig($seq_id);
+	$GFF3_pro->add_phathits($flat_proteins);
+	$GFF3_pro->finalize;
+	
+	#my $command_3 = "cp ";
+	#$command_3 .= $t_dir."/".$in_file.".protein_for_evm.gff";
+	#$command_3 .=" /home/mcampbell/project_links/MAKER_dev_msc/incorp_EVM/pigeon_test_data/";
+	#system($command_3);
+	
+	#create prediction GFF3 file
+	my $flat_preds = maker::auto_annotator::flatten_by_type($all_data, 'all_preds');
+	my $pred_file = "$in_file.preds_for_evm_gene.gff";
+	my $GFF3_preds = Dumper::GFF::GFFV3->new($pred_file);
+	$GFF3_preds->set_current_contig($seq_id);
+	$GFF3_preds->add_phathits($flat_preds);
+	$GFF3_preds->finalize;
+	my $chunk = 0;
+
+#debugging	
+	#my $command_1 = "cp ";
+	#$command_1 .= $t_dir."/".$in_file.".preds_for_evm_gene.gff";
+	#$command_1 .=" /home/mcampbell/projects/EVM_MAKER/test_data/testing_evm/";
+	#system($command_1);
+	
+	#fix feature types for Prediction (MAKER does match/match_part and EVM wants genes)
+	system("$FindBin::Bin/match2gene.pl $pred_file > $pred_file\_2; mv $pred_file\_2 $pred_file");
+	
+#	my $command_6 = "cp ";
+#	$command_6 .= " $pred_file";
+#	$command_6 .=" /home/mcampbell/projects/EVM_MAKER/test_data/testing_evm/";
+#	system($command_6);	
+
+	#my $command_5 = "cp ";
+	#$command_5 .= $t_dir."/".$in_file.".preds_for_evm_gene.gff";
+	#$command_5 .=" /home/mcampbell/project_links/MAKER_dev_msc/incorp_EVM/pigeon_test_data/";
+	#system($command_5);
+	
+	#build command
+	my $command = $exe;
+	$command .= " --genome $in_file";
+	$command .= " --weights $weights";
+	$command .= " --gene_predictions $pred_file";
+	$command .= " --protein_alignments $prot_file";
+	$command .= " --transcript_alignments $est_file";
+	#$command .= " --trellis_search_limit 20"; #suposed to make it go faster not working right now
+	$command .= " > $out_file";
+	#$command .= " 2> /dev/null"; #I could add an unless here for the debug flag
+	#my $command_4 = "cp ";
+	#$command_4 .= $out_file;
+	#$command_4 .=" /home/mcampbell/project_links/MAKER_dev_msc/incorp_EVM/pigeon_test_data/";
+	#system($command_4);
+
+#debugging stuff looking at the weight file
+	#my $command_2 = "cp ";
+        #$command_2 .= "$weights";
+        #$command_2 .=" /home/mcampbell/projects/EVM_MAKER/test_data/testing_evm/";
+        #system($command_2);
+	
+	my $w = new Widget::evm();
+        print STDERR "running  evm.\n" unless $main::quiet;
+        $w->run($command);
+	File::Copy::copy($out_file, $backup) unless($CTL_OPT->{clean_up});
+	unlink($weights, $est_file, $prot_file, $pred_file);
+    }
+
+    my %params;
+    my $keepers = Widget::evm->parse($out_file,
+                                     \%params,
+                                     $in_file);
+
+    $LOG->add_entry("FINISHED", $backup, "");
+
+    return $keepers;
+
 }
 #-----------------------------------------------------------------------------
 sub trnascan {
@@ -1511,6 +1767,7 @@ sub polish_exonerate {
     my $pid          = shift;
     my $score_limit  = shift;
     my $max_intron   = shift;
+    my $min_intron   = shift;
     my $matrix       = shift;
     my $pred_flank   = shift;
     my $est_forward  = shift;
@@ -1531,7 +1788,6 @@ sub polish_exonerate {
 	my $h_description;
 	my $B;
 	my $E;
-	my $min_intron = 20; #constant
 
 	#scalar for exonerate
 	if(ref($hit) eq '' && $hit =~ />([^\s]+)\s+(.*)/){
@@ -1658,15 +1914,15 @@ sub polish_exonerate {
 					 $matrix
 					 );
 
-	#temp
-	#make backup except on TACC cluster
-	if($o_tfile ne $backup && $HOST !~ /tacc\.utexas\.edu/){
-	    #File::Copy::move($o_tfile, $backup);
+	#make backup
+	if($o_tfile ne $backup){
+	    File::Copy::move($o_tfile, $backup);
+	    unlink($o_tfile);
 	}
 	$LOG->add_entry("FINISHED", $backup, "") if(defined $LOG);
-
+	
 	#delete fastas
-	unlink($d_file, $t_file, $o_tfile);
+	unlink($d_file, $t_file);
 
 	#evaluate exonerate results
 	my @keepers;
@@ -1913,7 +2169,7 @@ sub dbformat {
    my ($file) = shift =~ /^([^\:]+)\:?(.*)/; #peal off label
    my $type = shift;
 
-   confess "ERROR: Can not find xdformat, formatdb, or makeblastdb executable\n" if(! -e $exe);
+   confess "ERROR: Can not find xdformat, formatdb, makeblastdb, or prerapsearch executable\n" if(! -e $exe);
    confess "ERROR: Can not find the db file $file\n" if(! -e $file);
    confess "ERROR: You must define a type (blastn|blastx|tblastx)\n" if(! $type);
    
@@ -1958,6 +2214,12 @@ sub dbformat {
 	       $command .= " -dbtype prot" if($type eq 'blastx');
 	       $command .= " -dbtype nucl" if($type eq 'blastn' || $type eq 'tblastx');
 	       $command .= " -in $t_file";
+	       $run++;
+	   }
+       }
+       elsif ($exe =~ /prerapsearch/) {
+	   if ((! -e $file.'.db.info')){
+	       $command .= " -d $t_file -n $t_file.db";
 	       $run++;
 	   }
        }
@@ -2383,7 +2645,7 @@ sub blastx_as_chunks {
    my $pid_blast   = ($rflag) ? $CTL_OPT->{pid_rm_blastx} : $CTL_OPT->{pid_blastx};
    my $split_hit   = ($rflag) ? 0 : $CTL_OPT->{split_hit}; #repeat proteins get shatttered later anyway
    my $cpus        = $CTL_OPT->{cpus};
-   my $formater    = $CTL_OPT->{_formater};
+   my $formater    = (!$CTL_OPT->{use_rapsearch}) ? $CTL_OPT->{_formater} : $CTL_OPT->{prerapsearch};
    my $softmask    = ($rflag) ? 1 : $CTL_OPT->{softmask}; #always on for repeats
    my $org_type    = $CTL_OPT->{organism_type};
 
@@ -2452,11 +2714,23 @@ sub blastx_as_chunks {
    $params{is_first}      = $chunk->is_first;
    $params{is_last}       = $chunk->is_last;
 
+   #rapsearch misses query length and target length
+   if($blast =~ /rapsearch$/){
+       $params{query_length} = $chunk->length_w_flank();       
+       (my $db_dir = $db) =~ s/[^\/]+$//;
+       $params{db} = $db;
+   }
+
    my $chunk_keepers;
    try{
-      $chunk_keepers = Widget::blastx::parse($o_file,
-					     \%params,
-					     );
+       if($blast =~ /rapsearch$/){
+	   $chunk_keepers = Widget::rapsearch::parse($o_file,
+						     \%params,);
+       }
+       else{
+	   $chunk_keepers = Widget::blastx::parse($o_file,
+						  \%params,);
+       }
    }
    catch Error::Simple with {
       my $E = shift;
@@ -2565,7 +2839,7 @@ sub blastx {
    my $pid_blast  = ($rflag) ? $CTL_OPT->{bit_rm_blastx} : $CTL_OPT->{pid_blastx};
    my $split_hit   = ($rflag) ? 0 : $CTL_OPT->{split_hit}; #repeat proteins get shatttered later anyway
    my $cpus        = $CTL_OPT->{cpus};
-   my $formater    = $CTL_OPT->{_formater};
+   my $formater    = (!$CTL_OPT->{use_rapsearch}) ? $CTL_OPT->{_formater} : $CTL_OPT->{prerapsearch};
    my $softmask    = ($rflag) ? 1 : $CTL_OPT->{softmask};
    my $org_type    = $CTL_OPT->{organism_type};
 
@@ -2617,11 +2891,22 @@ sub blastx {
    $params{is_first}      = $chunk->is_first;
    $params{is_last}       = $chunk->is_last;
 
+   #rapsearch misses query length and target length
+   if($blast =~ /rapsearch$/){
+       $params{query_length} = $chunk->length();
+       $params{db} = $db;
+   }
+
    my $chunk_keepers;
    try{
-      $chunk_keepers = Widget::blastx::parse($o_file,
-					     \%params,
-					     );
+       if($blast =~ /rapsearch$/){
+           $chunk_keepers = Widget::rapsearch::parse($o_file,
+                                                     \%params,);
+       }
+       else{
+	   $chunk_keepers = Widget::blastx::parse($o_file,
+						  \%params,);
+       }
    }
    catch Error::Simple with {
       my $E = shift;
@@ -2686,7 +2971,7 @@ sub runBlastx {
 
    my $tmp = get_global_temp();
    my $command  = $blast;
-   if ($command =~ /blasta$/) {
+   if ($blast =~ /blasta$/) {
       symlink($blast, "$tmp/blastx") if(! -e "$tmp/blastx"); #handle blasta linking
       $command = "$tmp/blastx";
       $command .= " $db $q_file B=10000 V=10000 E=$eval_blast";
@@ -2708,7 +2993,7 @@ sub runBlastx {
       #$command .= " mformat=2"; # remove for full report
       $command .= " -o $out_file";
    }
-   elsif ($command =~ /blastall$/) {
+   elsif ($blast =~ /blastall$/) {
       $command .= " -p blastx";
       $command .= " -d $db -i $q_file -b 10000 -v 10000 -e $eval_blast";
       $command .= " -z 300";
@@ -2720,7 +3005,7 @@ sub runBlastx {
       #$command .= " -m 8"; # remove for full report
       $command .= " -o $out_file";
    }
-   elsif ($command =~ /blastx$/) {
+   elsif ($blast =~ /blastx$/) {
       $command .= " -db $db -query $q_file";
       $command .= " -num_alignments 10000 -num_descriptions 10000 -evalue $eval_blast";
       $command .= " -dbsize 300";
@@ -2733,12 +3018,20 @@ sub runBlastx {
       #$command .= " -outfmt 6"; # remove for full report
       $command .= " -out $out_file";
    }
+   elsif ($blast =~ /rapsearch$/) {
+       $command .= " -z $cpus";
+       $command .= " -a"; #acceleration mode
+       $command .= " -e ".log($eval_blast)/log(10);
+       $command .= " -v -1";
+       $command .= " -b -1";
+       $command .= " -d $db.db -q $q_file";
+       $command .= " -o $out_file";
+   }
    else{
       confess "ERROR: Must be a blastx executable";  
    }
 
-   my $w = new Widget::blastx();
-
+   my $w = ($blast =~ /rapsearch$/) ? new Widget::rapsearch() : new Widget::blastx();
    if (-e $out_file) {
       print STDERR "re reading blast report.\n" unless $main::quiet;
       print STDERR "$out_file\n" unless $main::quiet;
@@ -2749,6 +3042,12 @@ sub runBlastx {
       $dir =~ s/[^\/]+$//;
       File::Path::mkpath($dir);
       $w->run($command);
+
+      #fix outfile for rapsearch
+      if($blast =~ /rapsearch$/){
+	  unlink("$out_file.m8");
+	  File::Copy::move("$out_file.aln", "$out_file");
+      }
    }
 }
 #-----------------------------------------------------------------------------
@@ -3225,7 +3524,7 @@ sub build_the_void {
 
    my $vid = "theVoid\.$seq_id";   
    my $the_void = "$out_dir/$vid";
-   File::Path::mkpath ($the_void);
+   File::Path::mkpath ($the_void) if(! -d $the_void);
 
    return $the_void;
 }
@@ -3237,7 +3536,7 @@ sub set_defaults {
    my $type = shift || 'all';
    my $user_default = shift; #hash ref
 
-   if ($type !~ /^all$|^opts$|^bopts$|^exe$|^menus$|^server$/) {
+   if ($type !~ /^all$|^opts$|^bopts$|^exe$|^menus$|^server$|^evm$/) {
       warn "WARNING: Invalid type \'$type\' in S_Func ::set_defaults";
       $type = 'all';
    }
@@ -3263,7 +3562,7 @@ sub set_defaults {
       $CTL_OPT{'protein'} = '';
       $CTL_OPT{'protein_gff'} = '';
       $CTL_OPT{'model_org'} = 'all';
-      $CTL_OPT{'repeat_protein'} = Cwd::abs_path("$FindBin::Bin/../data/te_proteins.fasta") || '';
+      $CTL_OPT{'repeat_protein'} = Cwd::abs_path("$FindBin::RealBin/../data/te_proteins.fasta") || '';
       $CTL_OPT{'rmlib'} = '';
       $CTL_OPT{'rm_gff'} = '';
       $CTL_OPT{'organism_type'} = 'eukaryotic';
@@ -3277,9 +3576,11 @@ sub set_defaults {
       $CTL_OPT{'augustus_species'} = '';
       $CTL_OPT{'fgenesh_par_file'} = '';
       $CTL_OPT{'snoscan_rrna'} = '';
+      $CTL_OPT{'snoscan_meth'} = '';
       $CTL_OPT{'trna'} = 0;
       $CTL_OPT{'model_gff'} = '';
       $CTL_OPT{'pred_gff'} = '';
+      $CTL_OPT{'run_evm'} = 0;
       $CTL_OPT{'est2genome'} = 0;
       $CTL_OPT{'altest2genome'} = 0;
       $CTL_OPT{'protein2genome'} = 0;
@@ -3305,6 +3606,7 @@ sub set_defaults {
       $CTL_OPT{'pred_stats'} = 0;
       $CTL_OPT{'keep_preds'} = 0;
       $CTL_OPT{'split_hit'} = 10000;
+      $CTL_OPT{'min_intron'} = 20;
       $CTL_OPT{'softmask'} = 1;
       $CTL_OPT{'single_exon'} = 0;
       $CTL_OPT{'single_length'} = 250;
@@ -3335,6 +3637,8 @@ sub set_defaults {
    if ($type eq 'all' || $type eq 'bopts') {
       $CTL_OPT{'blast_type'} = 'ncbi+';
       $CTL_OPT{'blast_type'} .= '=DISABLED' if($main::server);
+      $CTL_OPT{'use_rapsearch'} = 0;
+      $CTL_OPT{'use_rapsearch'} .= '=DISABLED' if($main::server);
       $CTL_OPT{'pcov_blastn'} = 0.80;
       $CTL_OPT{'pid_blastn'} = 0.85;
       $CTL_OPT{'eval_blastn'} = 1e-10;
@@ -3368,11 +3672,13 @@ sub set_defaults {
       my @exes = ('xdformat',
 		  'formatdb',
 		  'makeblastdb',
+		  'prerapsearch',
 		  'blastall',
 		  'blasta',
 		  'blastn',
 		  'blastx',
 		  'tblastx',
+		  'rapsearch',
 		  'RepeatMasker',
 		  'exonerate',
 		  'snap',
@@ -3386,11 +3692,12 @@ sub set_defaults {
 		  'qrna',
 		  'jigsaw',
 		  'tRNAscan-SE',
-		  'snoscan'
+		  'snoscan',
+		  'evm'
 		 );
 
       #get MAKER overriden exe locations
-      my @all_alts = grep {-f $_ && -x $_} (File::Glob::bsd_glob("{$FindBin::Bin/../exe/*/*,$FindBin::Bin/../exe/*/bin/*}"));
+      my @all_alts = grep {-f $_ && -x $_} (File::Glob::bsd_glob("{$FindBin::RealBin/../exe/*/*,$FindBin::RealBin/../exe/*/bin/*}"));
       foreach my $exe (@exes) {
 	  my @alts = grep {/\/$exe$/} @all_alts;
 	  my $loc = shift @alts || File::Which::which($exe) || '';
@@ -3402,6 +3709,23 @@ sub set_defaults {
 	  }
 	  $CTL_OPT{$exe} = $loc || '';
       }
+   }
+
+   #maker_evm
+   if ($type eq 'all' || $type eq 'evm') {
+       $CTL_OPT{'evmtrans'}{'DEFAULT'} = 10;
+       $CTL_OPT{'evmtrans'}{'blastn'} = 0;
+       $CTL_OPT{'evmtrans'}{'est2genome'} = 10;
+       $CTL_OPT{'evmtrans'}{'tblastx'} = 0;
+       $CTL_OPT{'evmtrans'}{'cdna2genome'} = 7;
+       $CTL_OPT{'evmprot'}{'DEFAULT'} = 10;
+       $CTL_OPT{'evmprot'}{'blastx'} = 2;
+       $CTL_OPT{'evmprot'}{'protein2genome'} = 10;
+       $CTL_OPT{'evmab'}{'DEFAULT'} = 10;
+       $CTL_OPT{'evmab'}{'snap'} = 10;
+       $CTL_OPT{'evmab'}{'augustus'} = 10;
+       $CTL_OPT{'evmab'}{'fgenesh'} = 10;
+       $CTL_OPT{'evmab'}{'genemark'} = 7;
    }
 
    #server
@@ -3455,7 +3779,7 @@ sub set_defaults {
       $CTL_OPT{'font_file'} = '/usr/share/fonts/truetype/freefont/FreeMono.ttf' if(! -f $CTL_OPT{'font_file'});
       $CTL_OPT{'font_file'} = '' if(! -f $CTL_OPT{'font_file'});
       $CTL_OPT{'soba_url'} = 'http://www.sequenceontology.org/cgi-bin/soba.cgi';
-      $CTL_OPT{'JBROWSE_ROOT'} = "$FindBin::Bin/../exe/jbrowse";
+      $CTL_OPT{'JBROWSE_ROOT'} = "$FindBin::RealBin/../exe/jbrowse";
       $CTL_OPT{'JBROWSE_ROOT'} = '/var/www/html/jbrowse' if(! -d $CTL_OPT{'JBROWSE_ROOT'});
       $CTL_OPT{'JBROWSE_ROOT'} = '/Library/WebServer/Documents/jbrowse' if(! -d $CTL_OPT{'JBROWSE_ROOT'});
       $CTL_OPT{'JBROWSE_ROOT'} = '/var/www/jbrowse' if(! -d $CTL_OPT{'JBROWSE_ROOT'});
@@ -3465,7 +3789,7 @@ sub set_defaults {
       $CTL_OPT{'GBROWSE_MASTER'} = '/etc/gbrowse/GBrowse.conf';
       $CTL_OPT{'GBROWSE_MASTER'} = '/etc/gbrowse2/GBrowse.conf' if(! -f $CTL_OPT{'GBROWSE_MASTER'});
       $CTL_OPT{'GBROWSE_MASTER'} = '' if(! -f $CTL_OPT{'GBROWSE_MASTER'});
-      $CTL_OPT{'APOLLO_ROOT'} = "$FindBin::Bin/../exe/apollo";
+      $CTL_OPT{'APOLLO_ROOT'} = "$FindBin::RealBin/../exe/apollo";
       $CTL_OPT{'APOLLO_ROOT'} = $ENV{APOLLO_ROOT} if(! -d $CTL_OPT{'APOLLO_ROOT'} &&
 						     $ENV{APOLLO_ROOT} &&
 						     -d $ENV{APOLLO_ROOT});
@@ -3797,7 +4121,7 @@ sub load_server_files {
 	    $CTL_OPT{STAT}{self_train} = 'DISABLED';
 	}
 
-	if($CTL_OPT{$key} eq '' && $key =~ /^(snap|fgenesh|augustus|gmhmme3|gmhmmp|tRNAscan|snoscan)$/){
+	if($CTL_OPT{$key} eq '' && $key =~ /^(snap|fgenesh|augustus|gmhmme3|gmhmmp|tRNAscan|snoscan|evm)$/){
 	   $CTL_OPT{STAT}{$key} = 'DISABLED';
 	}
 
@@ -3828,7 +4152,8 @@ sub load_control_files {
       while (my $line = <CTL>) {
 	 chomp($line);
 	    
-	 if ($line !~ /^[\#\s\t\n]/ && $line =~ /^([^\:\=]+)[\:\=]([^\n\#]*)/) {
+	 if ($line !~ /^[\#\s\t\n]/ && $line =~ /^([^\=]+)[\:\=]([^\n\#]*)/) {
+	    my $label = '';
 	    my $key = $1;
 	    my $value = $2;
 
@@ -3837,7 +4162,24 @@ sub load_control_files {
 
 	    #remove preceding and trailing whitespace
 	    $value =~ s/^[\s\t]+|[\s\t]+$//g;
-	    
+
+	    #handle key labeling from EVM options
+	    if($key =~ /^(evmab|evmtrans|evmprot)\:?(.*)/){
+		($key, $label) = ($1, $2);
+		$label ||= 'DEFAULT';
+
+		#require numerical values
+		if ($value !~  /^[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[-+]?\d+)?$/) {
+		    $error .= "ERROR: Invalid setting for the option \'$key\' $label.".
+			" The value must be numerical.\n\n"
+		}
+		
+		#set value
+		$CTL_OPT{$key}{$label} = $value;
+		next;
+	    }
+
+	    #simple validation
 	    if (exists $CTL_OPT{$key}) { #should already exist or is a bad value
 	       #resolve environmental variables
 	       if ($value =~ /\$/) {
@@ -3858,9 +4200,51 @@ sub load_control_files {
 	    }
 	    else {
 	       warn "WARNING: Invalid option \'$key\' in control file $ctlfile\n\n";
+	       print "this one\n"; #mike
 	    }
 	 }
       }
+   }
+
+   #--force certain values on est_forward
+   $CTL_OPT{est_forward} = $OPT{est_forward} if(defined($OPT{est_forward}));
+   if($CTL_OPT{est_forward}){
+       $CTL_OPT{est2genome}       = 1;
+       $CTL_OPT{max_dna_len}      = 300000;
+       $CTL_OPT{split_hit}        = 30000;
+       $CTL_OPT{pred_flank}       = 1000;
+       $CTL_OPT{single_exon}      = 1;
+       $CTL_OPT{single_length}    = 1;
+       $CTL_OPT{pcov_blastn}      = .70;
+       $CTL_OPT{pid_blastn}       = .70;
+       $CTL_OPT{pcov_blastx}      = .50;
+       $CTL_OPT{pid_tblastx}      = .60;
+       $CTL_OPT{pcov_tblastx}     = .50;
+       $CTL_OPT{pid_blastx}       = .60;
+       $CTL_OPT{en_score_limit}   = 20;
+       $CTL_OPT{ep_score_limit}   = 10;
+       $CTL_OPT{R}                = 1;       
+       $CTL_OPT{snaphmm}          = '';
+       $CTL_OPT{gmhmm}            = '';
+       $CTL_OPT{augustus_species} = '';
+       $CTL_OPT{fgenesh_par_file} = '';
+       $CTL_OPT{trna}             = 0;
+       $CTL_OPT{snoscan_rrna}     = '';
+       $CTL_OPT{snoscan_meth}     = '';
+       $CTL_OPT{run_evm}          = 0;
+       $CTL_OPT{maker_gff}        = '';
+       $CTL_OPT{altest}           = '';
+       $CTL_OPT{est_gff}          = '';
+       $CTL_OPT{altest_gff}       = '';
+       $CTL_OPT{protein_gff}      = '';
+       $CTL_OPT{pred_gff}         = '';
+       $CTL_OPT{model_gff}        = '';
+       $CTL_OPT{other_gff}        = '';
+       $CTL_OPT{min_protein}      = 0;
+       $CTL_OPT{alt_splice}       = 0;
+       $CTL_OPT{always_complete}  = 0;
+       $CTL_OPT{map_forward}      = 0;
+       $CTL_OPT{correct_est_fusion} = 0;
    }
 
    #--load command line options
@@ -3939,23 +4323,25 @@ sub load_control_files {
    push(@run, 'fgenesh') if($CTL_OPT{fgenesh_par_file});
    push(@run, 'trnascan') if($CTL_OPT{trna});
    push(@run, 'snoscan') if($CTL_OPT{snoscan_rrna});
+   push(@run, 'evm') if($CTL_OPT{run_evm});
 
    if(! @predictors){ #build predictors if not provided
        push(@predictors, @run);
        push(@predictors, 'pred_gff') if($CTL_OPT{pred_gff} || ($CTL_OPT{maker_gff} && $CTL_OPT{pred_pass}));
        push(@predictors, 'model_gff') if($CTL_OPT{model_gff} || ($CTL_OPT{maker_gff} && $CTL_OPT{model_pass}));
    }
+   push(@predictors, 'altest2genome') if($CTL_OPT{altest2genome} && ! $main::eva);
    push(@predictors, 'est2genome') if($CTL_OPT{est2genome} && ! $main::eva);
    push(@predictors, 'protein2genome') if($CTL_OPT{protein2genome} && ! $main::eva);
 
    $CTL_OPT{_predictor} = {}; #temporary hash
    $CTL_OPT{_run} = {}; #temporary hash
    foreach my $p (@predictors) {
-       if ($p !~ /^snap$|^augustus$|^est2genome$|^protein2genome$|^fgenesh$/ &&
-	   $p !~ /^genemark$|^model_gff$|^pred_gff$|^trnascan$|^snoscan$/
+       if ($p !~ /^snap$|^augustus$|^est2genome$|^protein2genome$|^altest2genome$|^fgenesh$/ &&
+	   $p !~ /^genemark$|^model_gff$|^pred_gff$|^trnascan$|^snoscan$|^evm$/
 	   ) {
 	   $error .= "FATAL: Invalid predictor defined: $p\n".
-	       "Valid entries are: est2genome, model_gff, pred_gff,\n".
+	       "Valid entries are: est2genome, protein2genome, altest2genome, model_gff, pred_gff,\n".
 	       "snap, genemark, augustus, and fgenesh\n\n";
 	   next;
        }
@@ -3968,7 +4354,7 @@ sub load_control_files {
        }
 
        $CTL_OPT{_predictor}{$p}++;
-       $CTL_OPT{_run}{$p}++ unless($p =~ /est2genome|protein2genome|model_gff|pred_gff/);
+       $CTL_OPT{_run}{$p}++ unless($p =~ /est2genome|altest2genome|protein2genome|model_gff|pred_gff/);
    }
    $CTL_OPT{_predictor} = [keys %{$CTL_OPT{_predictor}}]; #convert to array
    $CTL_OPT{predictor} = join(",", @{$CTL_OPT{_predictor}}); #reset value for log
@@ -4026,6 +4412,11 @@ sub load_control_files {
       $CTL_OPT{_blastx} = $CTL_OPT{blastx};
       $CTL_OPT{_tblastx} = $CTL_OPT{tblastx};
    }
+
+   #replace blastx with rapsearch
+   if ($CTL_OPT{use_rapsearch}) {
+      $CTL_OPT{_blastx} = $CTL_OPT{rapsearch};
+   }
    
    #--validate existence of required values from control files
    my @infiles;
@@ -4046,6 +4437,11 @@ sub load_control_files {
        push (@infiles, 'blastx', 'makeblastdb') if($CTL_OPT{protein}); 
        push (@infiles, 'blastx', 'makeblastdb') if($CTL_OPT{repeat_protein}); 
        push (@infiles, 'tblastx', 'makeblastdb') if($CTL_OPT{altest});
+   }
+
+   if($CTL_OPT{use_rapsearch}){
+       push (@infiles, 'rapsearch', 'prerapsearch')
+	   if($CTL_OPT{protein} || $CTL_OPT{repeat_protein});
    }
 
    push (@infiles, 'genome');
@@ -4069,7 +4465,8 @@ sub load_control_files {
    push (@infiles, 'rmlib') if ($CTL_OPT{rmlib});
    push (@infiles, 'tRNAscan-SE') if (grep {/trnascan/} @{$CTL_OPT{_run}});
    push (@infiles, 'snoscan') if (grep {/snoscan/} @{$CTL_OPT{_run}});
-   
+   push (@infiles, 'evm') if (grep {/evm/} @{$CTL_OPT{_run}});
+
    if($CTL_OPT{organism_type} eq 'eukaryotic'){
        push (@infiles, 'exonerate') if($CTL_OPT{est}); 
        push (@infiles, 'exonerate') if($CTL_OPT{protein});
@@ -4119,15 +4516,20 @@ sub load_control_files {
       ){
        $error .= "ERROR: You must provide gene predictions in a GFF3 file to use pred_gff as a predictor.\n\n";
    }
-   if ((grep {/est2genome/} @{$CTL_OPT{_predictor}}) &&
+   if ((grep {/^est2genome/} @{$CTL_OPT{_predictor}}) &&
        !$CTL_OPT{est} &&
-       !$CTL_OPT{altest} &&
        !$CTL_OPT{est_gff} &&
-       !$CTL_OPT{altest_gff} &&
        (!$CTL_OPT{est_pass} || !$CTL_OPT{maker_gff})
       ){
        $error .= "ERROR: You must provide some form of EST evidence to use est2genome as a predictor.\n\n";
    } 
+   if ((grep {/^altest2genome/} @{$CTL_OPT{_predictor}}) &&
+       !$CTL_OPT{altest} &&
+       !$CTL_OPT{altest_gff} &&
+       (!$CTL_OPT{altest_pass} || !$CTL_OPT{maker_gff})
+       ){
+       $error .= "ERROR: You must provide some form of alt-EST evidence to use altest2genome as a predictor.\n\n";
+   }
    if ((grep {/protein2genome/} @{$CTL_OPT{_predictor}}) &&
        !$CTL_OPT{protein} &&
        !$CTL_OPT{protein_gff} &&
@@ -4472,8 +4874,78 @@ sub load_control_files {
        }
    }
 
-   #--exit with status of 0 if just checking control files with -check fla
+   #--exit with status of 0 if just checking control files with -check flag
    exit(0) if($OPT{check});
+
+   #--generate EVM control files and exit after parsing needed values
+   if($OPT{EVM}){
+       #--check for unset EVM labels here 
+       if($CTL_OPT{go_gffdb}){
+	   my %sources;
+	   my %maker_sources;
+#	   if (defined($CTL_OPT{maker_gff})){
+#	       my $fh = new FileHandle;
+#               $fh->open($CTL_OPT{maker_gff});
+#               while (defined(my $line = <$fh>)){
+#                   chomp($line);
+#                   last if $line =~ /^\#\#FASTA/;
+#                   next if $line =~ /^\#/;
+#                   my @columns = split(/\t/, $line);
+#                   $maker_sources{maker_gff}{$columns[1]}++;
+#               }
+#               $fh->close();
+#	   }
+	   my @gff3_input = qw(est_gff altest_gff protein_gff model_gff pred_gff);
+	   foreach my $key (@gff3_input){
+	       next unless defined($CTL_OPT{$key});
+	       my $fh = new FileHandle;
+	       $fh->open($CTL_OPT{$key});
+	       while (defined(my $line = <$fh>)){
+		   chomp($line);
+		   last if $line =~ /^\#\#FASTA/;
+		   next if $line =~ /^\#/;
+		   my @columns = split(/\t/, $line);
+		   $columns[1] = lc($columns[1]);
+		   $sources{$key}{$columns[1]}++;
+
+	       }
+	       $fh->close();
+	       #....parse any gff3 files relevant to evm and find the labels and add them example below
+	   
+	   }
+	   foreach my $key (keys %sources){
+	       if ($key eq 'est_gff' || $key eq 'altest_gff'){
+		   foreach my $source (keys %{$sources{$key}}){
+		       $CTL_OPT{evmtrans}{$source} = $CTL_OPT{evmtrans}{DEFAULT};
+		   }
+	       }
+	       if ($key eq 'protein_gff'){
+		   foreach my $source (keys %{$sources{$key}}){
+                       $CTL_OPT{evmprot}{$source} = $CTL_OPT{evmprot}{DEFAULT};
+                   }
+	       }
+	       if ($key eq 'model_gff' || $key eq 'pred_gff'){
+		   foreach my $source (keys %{$sources{$key}}){
+                       $CTL_OPT{evmab}{$source} = $CTL_OPT{evmab}{DEFAULT};
+                   }
+	       }
+	   }
+	   foreach my $source (keys %maker_sources){
+	       if ($source =~ /^snap|^augustus|^fgenesh|^genemark|^model|^pred/){
+		   $CTL_OPT{evmab}{$source} = $CTL_OPT{evmab}{DEFAULT};
+	       }
+	       if ($source =~ /^blastx|^protein2genome/){
+		   $CTL_OPT{evmprot}{$source} = $CTL_OPT{evmprot}{DEFAULT};
+	       }
+	       if ($source =~ /^blastn|^est2genome/){
+		   $CTL_OPT{evmtrans}{$source} = $CTL_OPT{evmtrans}{DEFAULT};
+	       }
+	   }
+       }
+       
+       generate_control_files('', 'evm', \%CTL_OPT);
+       exit(0);
+   }
 
    #---set up blast databases and indexes for analyisis
    $CTL_OPT{_mpi_size} = $mpi_size;
@@ -4492,7 +4964,7 @@ sub generate_control_files {
    my $app = ($ev) ? "eval" : "maker"; #extension
    my $ext = ($log) ? "log" : "ctl"; #extension
 
-   if ($type !~ /^all$|^opts$|^bopts$|^exe$|^menus$|^server$/) {
+   if ($type !~ /^all$|^opts$|^bopts$|^exe$|^menus$|^server$|^evm$/) {
        warn "WARNING: Invalid type \'$type\' in GI::generate_control_files";
        $type = 'all';
    }
@@ -4526,7 +4998,7 @@ sub generate_control_files {
        print OUT "altest_gff=$O{altest_gff} #aligned ESTs from a closly relate species in GFF3 format\n";
        print OUT "\n";
        print OUT "#-----Protein Homology Evidence (for best results provide a file for at least one)\n";
-       print OUT "protein=$O{protein}  #protein sequence file in fasta format (i.e. from mutiple oransisms)\n";
+       print OUT "protein=$O{protein}  #protein sequence file in fasta format (i.e. from mutiple organisms)\n";
        print OUT "protein_gff=$O{protein_gff}  #aligned protein homology evidence from an external GFF3 file\n";
        print OUT "\n";
        print OUT "#-----Repeat Masking (leave values blank to skip repeat masking)\n";
@@ -4545,10 +5017,12 @@ sub generate_control_files {
        print OUT "fgenesh_par_file=$O{fgenesh_par_file} #FGENESH parameter file\n";
        print OUT "pred_gff=$O{pred_gff} #ab-initio predictions from an external GFF3 file\n";
        print OUT "model_gff=$O{model_gff} #annotated gene models from an external GFF3 file (annotation pass-through)\n" if(!$ev);
+       print OUT "run_evm=$O{run_evm} #run EvidenceModeler, 1 = yes, 0 = no\n" if(!$ev);
        print OUT "est2genome=$O{est2genome} #infer gene predictions directly from ESTs, 1 = yes, 0 = no\n" if(!$ev);
        print OUT "protein2genome=$O{protein2genome} #infer predictions from protein homology, 1 = yes, 0 = no\n"  if(!$ev);
        print OUT "trna=$O{trna} #find tRNAs with tRNAscan, 1 = yes, 0 = no\n";
        print OUT "snoscan_rrna=$O{snoscan_rrna} #rRNA file to have Snoscan find snoRNAs\n";
+       print OUT "snoscan_meth=$O{snoscan_meth} #-O-methylation site fileto have Snoscan find snoRNAs\n";
        print OUT "unmask=$O{unmask} #also run ab-initio prediction programs on unmasked sequence, 1 = yes, 0 = no\n";
        print OUT "\n";
        print OUT "#-----Other Annotation Feature Types (features MAKER doesn't recognize)\n" if(!$ev);
@@ -4573,6 +5047,7 @@ sub generate_control_files {
        print OUT "keep_preds=$O{keep_preds} #Concordance threshold to add unsupported gene prediction (bound by 0 and 1)\n" if(!$ev);
        print OUT "\n";
        print OUT "split_hit=$O{split_hit} #length for the splitting of hits (expected max intron size for evidence alignments)\n";
+       print OUT "min_intron=$O{min_intron} #minimum intron length (used for alignment polishing)\n";
        print OUT "single_exon=$O{single_exon} #consider single exon EST evidence when generating annotations, 1 = yes, 0 = no\n";
        print OUT "single_length=$O{single_length} #min length required for single exon ESTs if \'single_exon\ is enabled'\n";
        print OUT "correct_est_fusion=$O{correct_est_fusion} #limits use of ESTs in annotation to avoid fusion genes\n";
@@ -4599,6 +5074,7 @@ sub generate_control_files {
 	   die "ERROR: Could not create $dir/$app\_bopts.$ext\n";
        print OUT "#-----BLAST and Exonerate Statistics Thresholds\n";
        print OUT "blast_type=$O{blast_type} #set to 'ncbi+', 'ncbi' or 'wublast'\n";
+       print OUT "use_rapsearch=$O{use_rapsearch} #use rapsearch instead of blastx, 1 = yes, 0 = no\n";
        print OUT "\n";
        print OUT "pcov_blastn=$O{pcov_blastn} #Blastn Percent Coverage Threhold EST-Genome Alignments\n";
        print OUT "pid_blastn=$O{pid_blastn} #Blastn Percent Identity Threshold EST-Genome Aligments\n";
@@ -4646,6 +5122,8 @@ sub generate_control_files {
        print OUT "blastall=$O{blastall} #location of NCBI blastall executable\n";
        print OUT "xdformat=$O{xdformat} #location of WUBLAST xdformat executable\n";
        print OUT "blasta=$O{blasta} #location of WUBLAST blasta executable\n";
+       print OUT "prerapsearch=$O{prerapsearch} #location of prerapsearch executable\n";
+       print OUT "rapsearch=$O{rapsearch} #location of rapsearch executable\n";
        print OUT "RepeatMasker=$O{RepeatMasker} #location of RepeatMasker executable\n";
        print OUT "exonerate=$O{exonerate} #location of exonerate executable\n";
        print OUT "\n";
@@ -4655,6 +5133,7 @@ sub generate_control_files {
        print OUT "gmhmmp=$O{gmhmmp} #location of prokaryotic genemark executable\n";
        print OUT "augustus=$O{augustus} #location of augustus executable\n";
        print OUT "fgenesh=$O{fgenesh} #location of fgenesh executable\n";
+       print OUT "evm=$O{'evm'} #location of EvidenceModeler executable\n";
        print OUT "tRNAscan-SE=$O{'tRNAscan-SE'} #location of trnascan executable\n";
        print OUT "snoscan=$O{snoscan} #location of snoscan executable\n";
        print OUT "\n";
@@ -4663,7 +5142,38 @@ sub generate_control_files {
        print OUT "probuild=$O{probuild} #location of probuild executable (required for genemark)\n";
        close(OUT);
    }
+#   if($type eq 'all' || $type eq 'evm'){ #change the behavior for -EVM at some point
+   if($type eq 'all'){ #change the behavior for -EVM at some point
+       #hash used to generate sort order for labels
+       my %C = ((map {$_ => 999} (keys %{$O{evmtrans}}, keys %{$O{evmprot}}, keys %{$O{evmab}})), #other
+		blastn => 1, est2genome => 2, tblastx => 3, cdna2genome => 4,  #transcripts
+		blastx => 1, protein2genome => 2,                              #proteins
+		snap => 1, augustus => 2, fgenesh => 3, genemark => 4);        #predictors
 
+       open (OUT, "> $dir/$app\_evm.$ext") or
+	   die "ERROR: Could not create $dir/$app\_evm.$ext\n";
+       print OUT "#-----Transcript weights\n";
+       print OUT "evmtrans=$O{evmtrans}{DEFAULT} #default weight for source unspecified est/alt_est alignments\n";
+       foreach my $label (sort {$C{$a} <=> $C{$b} || $a cmp $b} keys %{$O{evmtrans}}){
+	   next if ($label eq 'DEFAULT');
+	   print OUT "evmtrans:$label=$O{evmtrans}{$label} #weight for $label sourced alignments\n";
+       }
+       print OUT "\n";
+       print OUT "#-----Protein weights\n";
+       print OUT "evmprot=$O{evmprot}{DEFAULT} #default weight for source unspecified protein alignments\n";
+       foreach my $label (sort {$C{$a} <=> $C{$b} || $a cmp $b} keys %{$O{evmprot}}){
+	   next if ($label eq 'DEFAULT');
+	   print OUT "evmprot:$label=$O{evmprot}{$label} #weight for $label sourced alignments\n";
+       }
+       print OUT "\n";
+       print OUT "#-----Abinitio Prediction weights\n";
+       print OUT "evmab=$O{evmab}{DEFAULT} #default weight for source unspecified ab initio predictions\n";
+       foreach my $label (sort {$C{$a} <=> $C{$b} || $a cmp $b} keys %{$O{evmab}}){
+	   next if ($label eq 'DEFAULT');
+	   print OUT "evmab:$label=$O{evmab}{$label} #weight for $label sourced predictions\n";
+       }
+       close(OUT);
+   }
    #--build server.ctl file
    if($type eq 'server'){
        open (OUT, "> $dir/server.$ext") or

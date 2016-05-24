@@ -641,6 +641,30 @@ sub purge_short_ESTs_in_clusters{
     return \@c_keepers;
 }
 #------------------------------------------------------------------------
+#retuns an array of Phat hits of a single type given an array of hashes
+#of Phat hits and a type this was added for makeing evm input files
+sub flatten_by_type{
+    my $all_data = shift;
+    my $type     = shift;
+    my @keepers;
+    foreach my $cluster (@$all_data){
+	next unless $cluster->{'type'} eq 'bx';
+        foreach my $type_ (keys %$cluster){
+            if ($type_ eq $type){
+                foreach my $phits ($cluster->{$type_}){
+		    foreach my $ph (@$phits){
+                        if ($type eq 'gomiph'){
+                            push (@keepers, $ph) if $ph =~ /protein2genome/;;
+                        }
+                        else {push (@keepers, $ph)}
+		    }
+                }
+            }
+        }
+    }
+    return \@keepers;
+}
+#------------------------------------------------------------------------          
 #returns an array of hashes with the following atributes
 #called by prep_hits for standard evidence clusters
 #ests => set of all ests
@@ -655,7 +679,7 @@ sub prep_blastx_data {
 
 	my $ests_in_cluster  = get_selected_types($c,'est2genome', 'est_gff', 'blastn');
 	my $ps_in_cluster    = get_selected_types($c,'protein2genome');
-	my $bx_in_cluster    = get_selected_types($c,'blastx', 'protein_gff');
+	my $bx_in_cluster    = get_selected_types($c,'blastx', 'rapsearch', 'protein_gff');
 	my $alt_ests_in_cluster = get_selected_types($c, 'cdna2genome', 'tblastx', 'altest_gff');
 	my $models_in_cluster = get_selected_types($c,'model_gff', 'maker');
 	my $preds_in_cluster = get_selected_types($c,'snap', 'augustus', 'fgenesh',
@@ -703,7 +727,7 @@ sub prep_gff_data {
 
 	my $ests_in_cluster  = get_selected_types($c,'est2genome', 'est_gff', 'blastn');
 	my $ps_in_cluster    = get_selected_types($c,'protein2genome');
-	my $bx_in_cluster    = get_selected_types($c,'blastx', 'protein_gff');
+	my $bx_in_cluster    = get_selected_types($c,'blastx', 'rapsearch', 'protein_gff');
 	my $alt_ests_in_cluster = get_selected_types($c,'cdna2genome', 'tblastx', 'altest_gff');
 	my $preds_in_cluster = get_selected_types($c,'snap', 'augustus', 'fgenesh',
 						  'twinscan', 'genemark',  'pred_gff');
@@ -742,16 +766,16 @@ sub prep_pred_data {
 
 	#abinit model should always be first cluster entry
 	my $abinits = get_selected_types([$c->[0]],'snap', 'augustus', 'fgenesh',
-					 'twinscan', 'genemark', 'pred_gff');
+					 'twinscan', 'genemark', 'evm', 'pred_gff');
 	return undef if(!@$abinits);
 	confess "ERROR: Logic problem in maker::auto_annotator::prep_pred_data\n"
 	    if(@$abinits > 1);
 
 	my $preds_in_cluster = get_selected_types($c,'snap', 'augustus', 'fgenesh',
-						  'twinscan', 'genemark', 'pred_gff');
+						  'twinscan', 'genemark', 'evm', 'pred_gff');
 	my $ests_in_cluster  = get_selected_types($c,'est2genome', 'est_gff', 'blastn');
 	my $ps_in_cluster    = get_selected_types($c,'protein2genome');
-	my $bx_in_cluster    = get_selected_types($c,'blastx', 'protein_gff');
+	my $bx_in_cluster    = get_selected_types($c,'blastx', 'rapsearch', 'protein_gff');
 	my $alt_ests_in_cluster = get_selected_types($c, 'cdna2genome', 'tblastx', 'altest_gff');
 	my @uniq_preds = grep {$_->{_hit_multi} == 0} @$preds_in_cluster;
 
@@ -862,7 +886,7 @@ sub prep_ncrna_data {
 #
 #	my $ests_in_cluster = get_selected_types($c, 'est2genome', 'est_gff', 'blastn');
 #	my $ps_in_cluster   = get_selected_types($c,'protein2genome');
-#	my $bx_in_cluster   = get_selected_types($c,'blastx', 'protein_gff');
+#	my $bx_in_cluster   = get_selected_types($c,'blastx', 'rapsearch', 'protein_gff');
 #
 #	my $i_set      = combine($ps_in_cluster, $bx_in_cluster);
 #	my $best_p_set = clean::remove_redundant_alt_splices($i_set, 10);
@@ -949,7 +973,7 @@ sub annotate_trans {
 		$al =~ s/_masked$//;
 		$al =~ s/(pred_gff).*$/$1/;
 
-		if($al =~ /^snap$|^genemark$|^augustus$|^fgenesh$/){
+		if($al =~ /^snap$|^genemark$|^augustus$|^fgenesh$|^evm$/){
 		    push(@{$transcripts{"$al\_abinit"}}, $s);
 		}
 		elsif($al =~ /^pred_gff$/){
@@ -1012,8 +1036,10 @@ sub annotate_genes {
     #my $GFF_DB = new GFFDB($CTL_OPT);
     $SEEN = {};#$GFF_DB->get_existing_gene_names($seq_id);
 
+    #model_gff must be first to get propper uniq name check
+    my @keys = sort {($b eq 'model_gff') <=>($a eq 'model_gff')} keys %$transcripts;
+
     my %annotations;
-    my @keys = sort {($b eq 'model_gff') <=> ($a eq 'model_gff')} keys %$transcripts; #model_gff first
     foreach my $key (@keys){
 	$annotations{$key} = group_transcripts($transcripts->{$key},
 					       $all_data,
@@ -1695,7 +1721,7 @@ sub run_it{
 	my $ests     = ($CTL_OPT->{correct_est_fusion}) ? $set->{fusion} : $set->{ests};
 	my $model    = $set->{model};
 	my $gomiph   = $set->{gomiph};
-	my $blastx   = get_selected_types($gomiph,'blastx', 'protein_gff');
+	my $blastx   = get_selected_types($gomiph,'blastx', 'rapsearch', 'protein_gff');
 	my $pol_p    = get_selected_types($gomiph,'protein2genome');
 	my $alt_ests = $set->{alt_ests};
 	my $preds    = $set->{preds};
@@ -1854,6 +1880,75 @@ sub run_it{
 	    next;
 	}
 
+	#------altest2genome
+	if ($predictor eq 'altest2genome') {
+	    my $gomias = [];
+	    if($CTL_OPT->{est_forward}){
+		$gomias = $alt_ests;
+	    }
+	    elsif($CTL_OPT->{organism_type} eq 'prokaryotic'){
+		$gomias = PhatHit_utils::make_flat_hits($alt_ests, $v_seq);
+	    }
+	    else{
+		$gomias = clean::purge_single_exon_hits($alt_ests);
+
+		if(!@$gomias && @$alt_ests && $CTL_OPT->{single_exon}){ #only use single when there are no spliced
+		    $gomias = clean::purge_short_single_exons($alt_ests, $CTL_OPT->{single_length});
+		}
+		else{
+		    $gomias = clean::get_best_alt_splices($gomias, 10);
+		}
+	    }
+
+	    foreach my $mia (@$gomias){
+		my $transcript = $mia;
+		
+		#only tile if not set to push forward as is
+		if(!$CTL_OPT->{est_forward}){
+		    my $select = $mia;
+		    $transcript = pneu($ests, $select, $v_seq); #helps tile ESTs
+		    while(! compare::is_same_alt_form($select, $transcript, 0)){
+			$select = $transcript;
+			$transcript = pneu($ests, $select, $v_seq); #helps tile ESTs
+		    }
+		}
+		$transcript->{_HMM} = 'cdna2genome';
+
+		#at least 40% of altest2genome genes must be ORF
+		#also require some protein support for eukaryote single exon genes
+		if(!$CTL_OPT->{est_forward}){
+		    my $transcript_seq  = get_transcript_seq($transcript, $v_seq);
+		    my ($translation_seq,
+			$offset,
+			$end,
+			$has_start,
+			$has_stop) = get_translation_seq($transcript_seq, $transcript);
+
+		    #40% min
+		    next if((length($translation_seq)+1) * 3 / length($transcript_seq) < .40);
+
+		    #single exon results require more filtering
+		    if($CTL_OPT->{organism_type} eq 'eukaryotic' && $transcript->num_hsps == 1){
+			next if(!$has_stop && !$has_start); #single exon must have start and stop
+			next if(!@$gomiph); #single exon must have protein support
+			my $bAED = shadow_AED::get_eAED($gomiph, $transcript); #also verifies reading frame
+			next unless($bAED <= 0.5); #must have 50% inframe support
+		    }
+		}
+
+		#labels transcripts mapped to new assembly by % found
+		if($CTL_OPT->{est_forward}){
+		   $transcript->{_tran_name} = $mia->name;
+		   my $score = $mia->frac_identical * $mia->pAh * 100;
+		   $transcript->score($score);
+		}
+
+		push(@transcripts, [$transcript, $set->{index}, $mia]);
+	    }
+
+	    next;
+	}
+
 	#------protein2genome
 	if ($predictor eq 'protein2genome') {
 	    next if(! @$gomiph);
@@ -1911,6 +2006,7 @@ sub run_it{
 	return [] if ($predictor eq 'genemark');
 	return [] if ($predictor eq 'trnascan'); #neither does trnascan
 	return [] if ($predictor eq 'snoscan'); #neither does or snoscan
+	return [] if ($predictor eq 'evm'); #evm gets its hints another way
 
 	my $gomias = []; #group of most informative alt splices
 	if($CTL_OPT->{alt_splice}){
@@ -2175,10 +2271,10 @@ sub load_transcript_struct {
 	my $CTL_OPT      = shift;
 
 	my $transcript_seq  = get_transcript_seq($f, $seq);
-	my ($translation_seq, $offset, $end, $has_start, $has_stop, $len_3_utr, $l_trans);
+	my ($translation_seq, $offset, $end, $has_start, $has_stop);
 
 	if($predictor =~ /_ncrna$/){
-	    ($translation_seq, $offset, $end, $has_start, $has_stop, $len_3_utr, $l_trans) = ('', 0, 0, 0, 0, 0, 0);
+	    ($translation_seq, $offset, $end, $has_start, $has_stop) = ('', 0, 0, 0, 0);
 	}
 	else{
 	    ($translation_seq, $offset, $end, $has_start, $has_stop) = get_translation_seq($transcript_seq, $f);
@@ -2199,10 +2295,7 @@ sub load_transcript_struct {
 		    $transcript_seq  = get_transcript_seq($f, $seq);
 		    ($translation_seq, $offset, $end, $has_start, $has_stop) = get_translation_seq($transcript_seq, $f);
 		}
-	    }
-	    
-	    $len_3_utr = length($transcript_seq) - $end + 1;
-	    $l_trans =  length($translation_seq);
+	    }	    
 	}
 
 	#remove data that should not be carried over into certain transcripts
@@ -2227,7 +2320,7 @@ sub load_transcript_struct {
 	$t_name = $f->{_tran_name} if($f->{_tran_name}); #affects GFFV3.pm
 	$t_id = $f->{_tran_id} if($f->{_tran_id} && $f->algorithm =~ /^model_gff\:/); #affects GFFV3.pm
 	$f->name($t_name);
-	
+
 	my $t_struct = {'hit'       => $f,
 			'p_base'    => $p_base,
 			't_name'    => $t_name,
@@ -2238,6 +2331,7 @@ sub load_transcript_struct {
 			't_end'     => $end,
 			'has_start' => $has_start,
 			'has_stop'  => $has_stop,
+			'is_coding' => ($predictor =~ /\_ncrna$/) ? 0 : 1,
 			'p_length'  => length($translation_seq)
 		    };
 
@@ -2256,6 +2350,7 @@ sub load_transcript_struct {
 			    't_end'     => $end,
 			    'has_start' => $has_start,
 			    'has_stop'  => $has_stop,
+			    'is_coding' => 1,
 			    'p_length'  => length($translation_seq)
 			    };
 
@@ -2284,13 +2379,13 @@ sub load_transcript_stats {
 	my $transcript_seq  = $struct->{t_seq};
 	my $translation_seq = $struct->{p_seq};
 
-	my $len_3_utr = length($transcript_seq) - $end + 1;
+	my $len_3_utr = ($end) ? length($transcript_seq) - $end + 1 : 0;
 	my $l_trans   = length($translation_seq);
 
 	my $pol_p_hits   = get_selected_types($evi->{gomiph}, 'protein2genome');
 	my $pol_e_hits   = get_selected_types($evi->{ests}, 'est2genome', 'est_gff', 'blastn');
 	my $pol_f_hits   = get_selected_types($evi->{fusion}, 'est2genome', 'est_gff', 'blastn');
-	my $blastx_hits  = get_selected_types($evi->{gomiph},'blastx', 'protein_gff');
+	my $blastx_hits  = get_selected_types($evi->{gomiph},'blastx', 'rapsearch', 'protein_gff');
 	my $tblastx_hits = get_selected_types($evi->{alt_ests}, 'cdna2genome', 'tblastx', 'altest_gff');
 	my $abinits      = $evi->{all_preds};
 
@@ -2495,11 +2590,11 @@ sub group_transcripts {
        my $i = @$careful_clusters;
        foreach my $t (@transcripts) {
 	   my $j;
-	   if($predictor =~ /^est2genome$/ && ! exists $t->{gene_id}){
-	       push(@to_do, $t);
-	       next;
-	   }
-	   elsif(! exists $t->{gene_id}){
+	   #if($predictor =~ /^est2genome$/ && ! exists $t->{gene_id}){
+	   #    push(@to_do, $t);
+	   #    next;
+	   #}
+	   if(! exists $t->{gene_id}){
 	       $j = $i;
 	       $i++;
 	   }
@@ -2620,15 +2715,24 @@ sub group_transcripts {
 		  $SEEN->{$1}++;
 	      }
 	  }
-          elsif($sources =~ /trnascan/){
-              my $type = $c->[0]->name;
-              $g_name = "$sources-$seq_id-noncoding-$type-gene-$chunk_number"; #affects GFFV3.pm                                                                                                                                                                                    
+	  elsif($sources =~ /trnascan/){
+	      my $type = $c->[0]->name;
+	      $g_name = "$sources-$seq_id-noncoding-$type-gene-$chunk_number"; #affects GFFV3.pm
               $c_id++ while(exists $SEEN->{"$chunk_number\.$c_id"} || exists $SEEN->{"$g_name.$c_id"});
               $g_name = "$g_name.$c_id";
               $g_id = $g_name;
               $SEEN->{$g_name}++;
               $SEEN->{"$chunk_number\.$c_id"}++;
-          }
+	  }
+	  elsif($sources =~ /snoscan/){
+	      my $type = $c->[0]->name;
+	      $g_name = "$sources-$seq_id-noncoding-$type-gene-$chunk_number"; #affects GFFV3.pm
+              $c_id++ while(exists $SEEN->{"$chunk_number\.$c_id"} || exists $SEEN->{"$g_name.$c_id"});
+              $g_name = "$g_name.$c_id";
+              $g_id = $g_name;
+              $SEEN->{$g_name}++;
+              $SEEN->{"$chunk_number\.$c_id"}++;
+	  }
 	  else{
 	      $g_name = "$sources-$seq_id-noncoding-gene-$chunk_number"; #affects GFFV3.pm
 	      $c_id++ while(exists $SEEN->{"$chunk_number\.$c_id"} || exists $SEEN->{"$g_name.$c_id"});
@@ -2694,18 +2798,17 @@ sub group_transcripts {
       my ($g_start, $g_end, $g_strand) = get_start_and_end_on_seq(\@t_structs);
       my $g_attrib = $t_structs[0]->{hit}->{gene_attrib} if(exists $t_structs[0]->{hit}->{gene_attrib});
 
-
-      my $annotation = { 't_structs'  => \@t_structs, 
-			 'g_name'     => $g_name,
-			 'g_id'       => $g_id,
-			 'g_start'    => $g_start,
-			 'g_end'      => $g_end,
-			 'g_strand'   => $g_strand,
-			 'g_evidence' => $evidence,
-			 'g_evi_index'=> $evidence->{index},
-			 'predictor'  => $predictor,
-			 'algorithm'  => $sources,
-			 'g_attrib'   => $g_attrib
+      my $annotation = { 't_structs'   => \@t_structs, 
+			 'g_name'      => $g_name,
+			 'g_id'        => $g_id,
+			 'g_start'     => $g_start,
+			 'g_end'       => $g_end,
+			 'g_strand'    => $g_strand,
+			 'g_evidence'  => $evidence,
+			 'g_evi_index' => $evidence->{index},
+			 'predictor'   => $predictor,
+			 'algorithm'   => $sources,
+			 'g_attrib'    => $g_attrib
 		       };
 
       push(@annotations, $annotation);
