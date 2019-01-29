@@ -1,0 +1,3 @@
+#release 2.31.10
+*RepeatMasker sometimes reports an invalid start/end coordinate.
+ Now MAKER will fix the reported value for RepeatMasker

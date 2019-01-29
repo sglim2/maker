@@ -82,7 +82,7 @@ use POSIX;
 use Sys::Hostname;
 
 BEGIN{
-   $VERSION = '3.00';
+   $VERSION = '2.31.10';
 
    #what to do on ^C
    $SIG{INT}  = sub {print STDERR "SIGINT received\n"; print STDERR Carp::longmess; exit_maker(SIGINT);};
@@ -126,10 +126,8 @@ BEGIN{
 {
 my $tid = threads->tid if exists $INC{'threads.pm'};
 END {
-    my $stat = $?; #help preserve exit status
     my $is_thread = 1 if(defined($tid) && $tid != threads->tid);
     cleanup($is_thread);
-    $? = $stat if($stat);
 }
 }
 
@@ -290,13 +288,6 @@ Getopt::Long::Configure(qw(no_pass_through));
 GetOptions("RM_off|R" => \$OPT{R},
 	   "force|f" => \$OPT{force},
 	   "genome|g=s" => \$OPT{genome},
-	   "est=s" => \$OPT{est},
-	   "protein=s" => \$OPT{protein},
-	   "altest=s" => \$OPT{altest},
-	   "est2genome" => \$OPT{est2genome},
-	   "altest2genome" => \$OPT{altest2genome},
-	   "protein2genome" => \$OPT{protein2genome},
-	   "est_forward" => \$OPT{est_forward},
 	   "cpus|c=i" => \$OPT{cpus},
 	   "tries=i" =>\$OPT{tries},
 	   "dsindex" =>\$OPT{dsindex},
@@ -333,7 +324,7 @@ GetOptions("RM_off|R" => \$OPT{R},
 	   "EXE" => sub {GI::generate_control_files('','exe')
 			     if($rank == $root);
 			 exit_maker(0);},
-	   "EVM" => \$OPT{EVM},
+
     );
 $main::quiet = 1 if($main::qq);
 $C = 0;
@@ -361,8 +352,8 @@ if($main::debug){
 #--get files off the command line
 my @ctlfiles = @ARGV;
 if (! @ctlfiles) {
-    if (-e "maker_opts.ctl" && -e "maker_bopts.ctl" && -e "maker_exe.ctl" && -e "maker_evm.ctl") {
-	@ctlfiles = qw(maker_opts.ctl maker_bopts.ctl maker_exe.ctl maker_evm.ctl);
+    if (-e "maker_opts.ctl" && -e "maker_bopts.ctl" && -e "maker_exe.ctl") {
+	@ctlfiles = qw(maker_opts.ctl maker_bopts.ctl maker_exe.ctl);
     }
     elsif($rank == $root) {
 	print STDERR  "ERROR: Control files not found\n";
@@ -518,7 +509,7 @@ if($rank == $root){
     }
 
     my @to_do;
-    my @ins = qw(genome protein est altest repeat_protein rmlib);
+    my @ins = qw(genome protein est altest repeat_protein);
     foreach my $in (@ins){
 	my @files = split(/\,/, $CTL_OPT{$in});
 	my %uniq = map {/^([^\:]+)\:?(.*)?/} @files;
@@ -526,7 +517,7 @@ if($rank == $root){
 	@files = map {($uniq{$_}) ? GI::s_abs_path($_).":$_" : $_} keys %uniq;
 
 	my $key  = ($in =~ /protein/) ? 'protein' : 'nucleotide';
-	my $bins = ($in eq 'genome' || $in eq 'rmlib') ? 1 : 10;
+	my $bins = ($in eq 'genome') ? 1 : 10;
 	my $bdir = $CTL_OPT{mpi_blastdb};
 	my $alt  = $CTL_OPT{alt_peptide};
 	
